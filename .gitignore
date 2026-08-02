@@ -1,0 +1,31 @@
+/target
+target-*/
+**/*.rs.bk
+Cargo.lock.bak
+
+# Datasets are fetched, never committed. See datasets/README.md.
+/datasets/*
+!/datasets/README.md
+!/datasets/fetch.sh
+
+# Build artifacts
+/packages/web-slam/dist
+/packages/web-slam/pkg
+/packages/demo/dist
+node_modules/
+.pnpm-store/
+
+# Rig capture output
+/rigs/captures/
+__pycache__/
+*.pyc
+.venv/
+
+# rerun sessions
+*.rrd
+
+.DS_Store
+
+# Local TLS material for LAN phone testing. Never commit a private key.
+/packages/demo/.certs/
+*.pem

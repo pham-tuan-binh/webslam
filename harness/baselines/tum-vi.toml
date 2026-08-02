@@ -1,0 +1,6 @@
+# Tier-2 regression baselines for TUM-VI.
+#
+# Empty until recorded. An unbaselined sequence FAILS the regression run
+# rather than passing quietly — see README.md.
+#
+# Record with: cargo xtask regen-baselines --confirm

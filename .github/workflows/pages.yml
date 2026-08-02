@@ -1,0 +1,80 @@
+name: demo
+
+# Builds the wasm pipeline and the demo, then publishes to GitHub Pages.
+#
+# The wasm artifact is built with the `gpu` feature: the CPU reference is
+# roughly 25x slower on the image stages, which on a phone is the difference
+# between usable and not.
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+# Pages deployment needs these; the default token is read-only.
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+# Never let two deploys race. Don't cancel a running one: a half-finished
+# deploy is worse than a slightly stale page.
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install the Rust toolchain
+        run: |
+          rustup toolchain install stable --profile minimal
+          rustup target add wasm32-unknown-unknown
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Install wasm-bindgen-cli
+        run: |
+          # Must match the wasm-bindgen crate version or the generated JS and
+          # the wasm disagree about the ABI and fail at load time.
+          version=$(cargo metadata --format-version 1 --locked \
+            | python3 -c "import json,sys;print(next(p['version'] for p in json.load(sys.stdin)['packages'] if p['name']=='wasm-bindgen'))")
+          echo "wasm-bindgen $version"
+          cargo install wasm-bindgen-cli --version "$version" --locked
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 9
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: pnpm
+
+      - run: pnpm install --frozen-lockfile
+
+      - name: Build the wasm pipeline
+        run: cargo xtask build-wasm --release
+
+      - name: Build the demo
+        run: |
+          pnpm --filter web-slam build
+          pnpm --filter web-slam-demo build
+        env:
+          DEMO_BASE: /${{ github.event.repository.name }}/
+
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: packages/demo/dist
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deploy.outputs.page_url }}
+    steps:
+      - id: deploy
+        uses: actions/deploy-pages@v4

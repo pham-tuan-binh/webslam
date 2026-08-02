@@ -1,0 +1,38 @@
+[package]
+name = "wslam"
+description = "Orchestration: the only crate aware of all layers. Owns the frontend/backend split."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[features]
+default = ["orientation", "map"]
+# Tier 2 — the baseline (spec.md §4).
+orientation = []
+# Tier 3 — research track R1. Pulls in L0.
+tight-vi = ["dep:wslam-clock", "wslam-scale/tight-vi"]
+# Opt-in learned depth prior; ships no weights.
+learned-scale = ["wslam-scale/learned-scale"]
+map = []
+# Forward the GPU image front-end (spec.md §8 WebGPU budget).
+gpu = ["wslam-track/gpu"]
+
+[dependencies]
+wslam-core.workspace = true
+wslam-clock = { workspace = true, optional = true }
+wslam-orientation.workspace = true
+wslam-calib.workspace = true
+wslam-track.workspace = true
+wslam-map.workspace = true
+wslam-scale.workspace = true
+nalgebra.workspace = true
+log.workspace = true
+
+[dev-dependencies]
+approx.workspace = true
+
+[lints]
+workspace = true

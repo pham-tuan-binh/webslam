@@ -1,0 +1,262 @@
+/*
+ * The demo is the adoption artifact (spec.md §8), so it should not look like a
+ * test page. One accent colour, one typeface stack, generous negative space,
+ * and every number on screen legible at arm's length on a phone in daylight.
+ */
+
+:root {
+  --ink: #f2f4f8;
+  --ink-dim: #99a2b3;
+  --bg: #08090c;
+  --accent: #5eead4;
+  --warn: #fbbf24;
+  --bad: #f87171;
+  --panel: rgba(10, 12, 18, 0.72);
+  --hairline: rgba(255, 255, 255, 0.1);
+  font-family: ui-monospace, "SF Mono", "JetBrains Mono", Menlo, monospace;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  margin: 0;
+  height: 100%;
+  overflow: hidden;
+  background: var(--bg);
+  color: var(--ink);
+  -webkit-font-smoothing: antialiased;
+  overscroll-behavior: none;
+  touch-action: none;
+}
+
+#feed,
+#scene {
+  position: fixed;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+}
+
+#feed {
+  object-fit: cover;
+  /* The stub backend has no real camera relationship, but the demo still shows
+     the live feed so the composite is honest about what is overlaid on what. */
+  background: #000;
+}
+
+#scene {
+  pointer-events: none;
+}
+
+#hud {
+  position: fixed;
+  top: max(1rem, env(safe-area-inset-top));
+  left: max(1rem, env(safe-area-inset-left));
+  right: max(1rem, env(safe-area-inset-right));
+  padding: 0.75rem 0.9rem;
+  border: 1px solid var(--hairline);
+  border-radius: 12px;
+  background: var(--panel);
+  backdrop-filter: blur(14px);
+  -webkit-backdrop-filter: blur(14px);
+  font-size: 0.78rem;
+  line-height: 1.7;
+  letter-spacing: 0.01em;
+  display: grid;
+  gap: 0.15rem;
+  max-width: 30rem;
+}
+
+.row {
+  display: flex;
+  align-items: center;
+  gap: 0.7rem;
+  flex-wrap: wrap;
+}
+
+.muted {
+  color: var(--ink-dim);
+}
+
+.dot {
+  width: 0.6rem;
+  height: 0.6rem;
+  border-radius: 50%;
+  background: var(--ink-dim);
+  box-shadow: 0 0 0.5rem currentColor;
+  transition: background 160ms ease;
+  flex: 0 0 auto;
+}
+
+.dot[data-state="tracking"] {
+  background: var(--accent);
+}
+.dot[data-state="limited"] {
+  background: var(--warn);
+}
+.dot[data-state="lost"],
+.dot[data-state="relocalizing"] {
+  background: var(--bad);
+}
+
+#state-label {
+  font-weight: 600;
+  text-transform: lowercase;
+}
+
+.badge {
+  margin-left: auto;
+  padding: 0.1rem 0.5rem;
+  border: 1px solid var(--hairline);
+  border-radius: 999px;
+  color: var(--ink-dim);
+  font-size: 0.7rem;
+  white-space: nowrap;
+}
+
+.timings {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(4.2rem, 1fr));
+  gap: 0.35rem;
+  margin-top: 0.35rem;
+  padding-top: 0.5rem;
+  border-top: 1px solid var(--hairline);
+  font-size: 0.65rem;
+  color: var(--ink-dim);
+}
+
+.timings div {
+  display: grid;
+  gap: 0.1rem;
+}
+
+.timings b {
+  color: var(--ink);
+  font-weight: 600;
+}
+
+.timings .bar {
+  height: 2px;
+  background: var(--accent);
+  border-radius: 1px;
+  opacity: 0.75;
+}
+
+#events {
+  position: fixed;
+  bottom: max(1rem, env(safe-area-inset-bottom));
+  left: max(1rem, env(safe-area-inset-left));
+  display: grid;
+  gap: 0.35rem;
+  font-size: 0.72rem;
+  pointer-events: none;
+}
+
+.event {
+  padding: 0.35rem 0.6rem;
+  border-radius: 8px;
+  border: 1px solid var(--hairline);
+  background: var(--panel);
+  backdrop-filter: blur(10px);
+  animation: rise 320ms ease both;
+}
+
+.event.accept {
+  border-color: rgba(94, 234, 212, 0.45);
+}
+.event.reject {
+  border-color: rgba(248, 113, 113, 0.45);
+  color: var(--ink-dim);
+}
+
+@keyframes rise {
+  from {
+    opacity: 0;
+    transform: translateY(6px);
+  }
+}
+
+#gate {
+  position: fixed;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  padding: 1.5rem;
+  background: radial-gradient(120% 90% at 50% 0%, #101725 0%, var(--bg) 70%);
+  z-index: 10;
+}
+
+#gate[hidden] {
+  display: none;
+}
+
+.gate-card {
+  max-width: 26rem;
+  text-align: left;
+  display: grid;
+  gap: 0.85rem;
+}
+
+.gate-card h1 {
+  margin: 0;
+  font-size: 2.1rem;
+  letter-spacing: -0.03em;
+  font-weight: 600;
+}
+
+.gate-card p {
+  margin: 0;
+  color: var(--ink-dim);
+  line-height: 1.65;
+  font-size: 0.85rem;
+}
+
+.gate-card .fine {
+  font-size: 0.75rem;
+  opacity: 0.72;
+}
+
+.gate-card strong {
+  color: var(--ink);
+  font-weight: 600;
+}
+
+#start {
+  margin-top: 0.4rem;
+  padding: 0.85rem 1.4rem;
+  font: inherit;
+  font-weight: 600;
+  color: var(--bg);
+  background: var(--accent);
+  border: none;
+  border-radius: 10px;
+  cursor: pointer;
+  transition: transform 120ms ease, filter 120ms ease;
+}
+
+#start:active {
+  transform: scale(0.98);
+  filter: brightness(0.94);
+}
+
+.error:empty {
+  display: none;
+}
+
+.error {
+  color: var(--bad);
+  font-size: 0.78rem;
+  padding: 0.5rem 0.7rem;
+  border: 1px solid rgba(248, 113, 113, 0.35);
+  border-radius: 8px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  * {
+    animation: none !important;
+    transition: none !important;
+  }
+}

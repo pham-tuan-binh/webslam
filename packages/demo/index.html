@@ -1,0 +1,54 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta
+      name="viewport"
+      content="width=device-width, initial-scale=1, maximum-scale=1, viewport-fit=cover"
+    />
+    <meta name="theme-color" content="#08090c" />
+    <title>web-slam</title>
+    <link rel="stylesheet" href="./src/style.css" />
+  </head>
+  <body>
+    <!-- The camera feed sits underneath everything; the WebGL canvas composites
+         the landmark cloud and trajectory over it. `playsinline` is required on
+         iOS or the video takes over the screen. -->
+    <video id="feed" playsinline muted></video>
+    <canvas id="scene"></canvas>
+
+    <div id="hud">
+      <div class="row">
+        <span id="state-dot" class="dot"></span>
+        <span id="state-label">idle</span>
+        <span id="scale-badge" class="badge">scale: none</span>
+      </div>
+      <div class="row muted">
+        <span id="landmark-count">0 landmarks</span>
+        <span id="keyframe-count">0 keyframes</span>
+        <span id="fps">– fps</span>
+      </div>
+      <div id="timings" class="timings"></div>
+    </div>
+
+    <div id="events" aria-live="polite"></div>
+
+    <div id="gate">
+      <div class="gate-card">
+        <h1>web-slam</h1>
+        <p>
+          6-DoF pose in a stock mobile browser. This build runs the
+          <strong>stub backend</strong> &mdash; synthetic poses, no tracking.
+        </p>
+        <p class="fine">
+          iOS requires a tap before motion sensors are available. That is a
+          platform constraint, not a design choice.
+        </p>
+        <button id="start">Start</button>
+        <p id="gate-error" class="error"></p>
+      </div>
+    </div>
+
+    <script type="module" src="./src/main.ts"></script>
+  </body>
+</html>

@@ -1,0 +1,12 @@
+{
+  "name": "web-slam-monorepo",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "pnpm -r build",
+    "test": "pnpm -r test",
+    "typecheck": "pnpm -r typecheck",
+    "dev": "pnpm --filter web-slam-demo dev"
+  },
+  "packageManager": "pnpm@10.28.1"
+}

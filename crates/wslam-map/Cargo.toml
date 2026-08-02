@@ -1,0 +1,23 @@
+[package]
+name = "wslam-map"
+description = "L4: keyframes, place recognition, pose graph"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[dependencies]
+wslam-core.workspace = true
+nalgebra.workspace = true
+log.workspace = true
+
+[dev-dependencies]
+approx.workspace = true
+# spec.md §6 Tier 1 names "map serialise/deserialise round-trip" as a property
+# test; serialize.rs also property-tests that hostile bytes never panic.
+proptest.workspace = true
+
+[lints]
+workspace = true

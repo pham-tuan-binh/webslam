@@ -1,0 +1,29 @@
+[package]
+name = "wslam-track"
+description = "L3: sparse KLT + PnP frontend, pose up to scale"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[features]
+default = []
+# spec.md §4 L3 puts pyramid/corner/flow on WebGPU compute shaders. docs
+# DECISIONS.md D5 keeps the CPU path as the definitionally-correct reference, so
+# the GPU crate is an optional dependency and `TrackConfig::use_gpu` selects it
+# at runtime only when it is compiled in.
+gpu = ["dep:wslam-gpu"]
+
+[dependencies]
+wslam-core.workspace = true
+wslam-gpu = { workspace = true, optional = true }
+nalgebra.workspace = true
+log.workspace = true
+
+[dev-dependencies]
+approx.workspace = true
+
+[lints]
+workspace = true

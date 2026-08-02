@@ -1,0 +1,65 @@
+{
+  "name": "web-slam",
+  "version": "0.1.0",
+  "description": "6-DoF pose in stock mobile browsers, with an explicit metric anchor and calibrated uncertainty.",
+  "license": "MIT OR Apache-2.0",
+  "type": "module",
+  "sideEffects": false,
+  "files": [
+    "dist",
+    "pkg",
+    "README.md"
+  ],
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    },
+    "./three": {
+      "types": "./dist/three.d.ts",
+      "default": "./dist/three.js"
+    },
+    "./wasm": {
+      "types": "./dist/wasm.d.ts",
+      "default": "./dist/wasm.js"
+    },
+    "./mock": {
+      "types": "./dist/mock.d.ts",
+      "default": "./dist/mock.js"
+    },
+    "./pkg/wslam_wasm.js": {
+      "default": "./pkg/wslam_wasm.js"
+    },
+    "./pkg/*": {
+      "default": "./pkg/*"
+    }
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "clean": "rm -rf dist"
+  },
+  "devDependencies": {
+    "typescript": "^5.7.2",
+    "vitest": "^3.0.5"
+  },
+  "keywords": [
+    "slam",
+    "webxr",
+    "ar",
+    "visual-odometry",
+    "webgpu",
+    "pose"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/livekit/web-slam"
+  },
+  "publishConfig": {
+    "access": "public"
+  }
+}

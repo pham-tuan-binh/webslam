@@ -1,0 +1,9 @@
+# The vocabulary is a binary artifact, not source. See vocab/README.md.
+vocab/*.bin filter=lfs diff=lfs merge=lfs -text
+
+# Keep diffs readable for the things that are source.
+*.rs text eol=lf
+*.ts text eol=lf
+*.wgsl text eol=lf
+*.py text eol=lf
+*.md text eol=lf

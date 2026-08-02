@@ -1,0 +1,28 @@
+[package]
+name = "wslam-viewer"
+description = "Dev viewer: rerun logging helpers. spec.md §8, internal, ugly, indispensable."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish = false
+
+[features]
+default = []
+# rerun is a heavy dependency; off by default so `cargo test` stays fast.
+rerun-viewer = ["dep:rerun"]
+
+[dependencies]
+wslam-core.workspace = true
+nalgebra.workspace = true
+log.workspace = true
+# NOTE: rerun 0.34 pulls `fixed`, whose 1.31 release requires rustc 1.93 while
+# rust-toolchain.toml pins stable-1.92. Cargo.lock holds `fixed` at 1.30.0 for
+# that reason. Remove the pin once the toolchain moves.
+rerun = { workspace = true, optional = true }
+
+[dev-dependencies]
+approx.workspace = true
+
+[lints]
+workspace = true

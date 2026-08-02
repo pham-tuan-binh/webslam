@@ -1,0 +1,186 @@
+name: ci
+
+# The cadence table from spec.md §6:
+#   Tier 1 (pure)    — every commit, < 10 s
+#   Tier 2 (replay)  — subset per commit, full nightly
+#   Tier 3 (rig)     — needs hardware; not runnable on hosted runners. The
+#                      metric-truth half is absent entirely (rigs/README.md).
+#   Tier 4 (browser) — per milestone, needs a device lab
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  schedule:
+    # 04:00 UTC nightly, for the full replay sweep.
+    - cron: "0 4 * * *"
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # ---------------------------------------------------------------------------
+  # Tier 1. This is the gate that must stay fast enough that nobody skips it.
+  # ---------------------------------------------------------------------------
+  tier1:
+    name: tier 1 — pure
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+          targets: wasm32-unknown-unknown
+      - uses: Swatinem/rust-cache@v2
+
+      - name: format
+        run: cargo fmt --all --check
+
+      - name: clippy
+        run: cargo clippy --workspace --all-targets --all-features -- -D warnings
+
+      - name: test
+        run: cargo test --workspace --all-features
+
+      # Determinism is a spec requirement, not a nicety (spec.md §6). Running
+      # the suite twice and diffing catches an unseeded RNG or a wall-clock read
+      # that a single green run would hide.
+      - name: determinism — the suite agrees with itself
+        run: |
+          cargo test --workspace --all-features -- --test-threads=1 2>&1 | grep -E '^test ' | sort > /tmp/run1.txt
+          cargo test --workspace --all-features -- --test-threads=1 2>&1 | grep -E '^test ' | sort > /tmp/run2.txt
+          diff /tmp/run1.txt /tmp/run2.txt
+
+      # The rules spec.md §6 makes structural: no wall clock on the estimation
+      # path, no unseeded RNG. Implemented in xtask rather than as a grep here,
+      # because a grep cannot see comments or module boundaries and fires on doc
+      # comments and legitimate test stopwatches — and a check with false
+      # positives gets disabled within a week.
+      - name: structural invariants
+        run: cargo xtask check-invariants
+
+  # ---------------------------------------------------------------------------
+  # The wasm target must keep compiling even when nobody is looking at it.
+  # ---------------------------------------------------------------------------
+  wasm:
+    name: wasm build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+      - uses: Swatinem/rust-cache@v2
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: wasm-bindgen-cli
+
+      - name: install binaryen
+        run: sudo apt-get update && sudo apt-get install -y binaryen
+
+      - name: build
+        run: cargo xtask build-wasm --release
+
+      # Binary size is one of the three stated reasons for choosing Rust over
+      # Emscripten (spec.md §7), so it is tracked rather than assumed.
+      - name: report artifact size
+        run: |
+          size=$(stat -c%s packages/web-slam/pkg/wslam_wasm_bg.wasm)
+          echo "wasm: $((size / 1024)) KiB" >> "$GITHUB_STEP_SUMMARY"
+          if [ "$size" -gt 3145728 ]; then
+            echo "::warning::wasm artifact exceeds 3 MiB ($((size / 1024)) KiB)"
+          fi
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: wasm-pkg
+          path: packages/web-slam/pkg/
+
+  # ---------------------------------------------------------------------------
+  # The public API surface and the demo that validates it.
+  # ---------------------------------------------------------------------------
+  typescript:
+    name: typescript
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm -r typecheck
+      - run: pnpm -r test
+      - run: pnpm -r build
+
+  # ---------------------------------------------------------------------------
+  # The rigs. Only the dry-run paths, which is exactly what makes them useful
+  # in CI: a broken harness is found before a rig session, not during one.
+  # ---------------------------------------------------------------------------
+  rigs:
+    name: rigs — dry run
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install pytest
+      - name: tier 1 tests for the instruments
+        working-directory: rigs
+        run: python -m pytest -q test_rigs.py
+      - name: end-to-end dry run
+        working-directory: rigs
+        run: |
+          python turntable.py --dry-run --duration 2 --device-label ci --out /tmp/captures
+          python strobe.py --out /tmp/strobe.html
+
+  # ---------------------------------------------------------------------------
+  # Tier 2. Per-commit subset, full sweep nightly. The regression wall.
+  # ---------------------------------------------------------------------------
+  tier2:
+    name: tier 2 — replay
+    runs-on: ubuntu-latest
+    needs: tier1
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+
+      - name: cache datasets
+        id: datasets
+        uses: actions/cache@v4
+        with:
+          path: datasets
+          key: datasets-euroc-v1
+
+      - name: fetch datasets
+        if: steps.datasets.outputs.cache-hit != 'true'
+        run: sh datasets/fetch.sh euroc
+
+      - name: replay regression
+        run: cargo run -p wslam-replay --release -- regress ${{ github.event_name == 'schedule' && '--full' || '--subset' }}
+
+      # spec.md §6: "Nightly runs record a rerun session as a build artifact.
+      # When a regression fires, scrub the failing run visually instead of
+      # bisecting from a single ATE number."
+      - name: record rerun session
+        if: github.event_name == 'schedule'
+        run: cargo run -p wslam-replay --release --features rerun-viewer -- regress --full --rrd /tmp/nightly.rrd
+
+      - uses: actions/upload-artifact@v4
+        if: always() && github.event_name == 'schedule'
+        with:
+          name: nightly-rerun-session
+          path: /tmp/nightly.rrd
+          if-no-files-found: ignore

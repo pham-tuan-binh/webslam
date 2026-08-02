@@ -1,0 +1,33 @@
+[package]
+name = "wslam-wasm"
+description = "wasm-bindgen boundary. Deliberately thin: no logic, so the core stays natively testable."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[features]
+# WebGPU image front-end. Off by default so a build without it still runs the
+# CPU reference rather than failing to compile.
+gpu = ["wslam/gpu", "dep:wslam-track", "dep:wasm-bindgen-futures"]
+
+[dependencies]
+wslam.workspace = true
+wslam-track = { workspace = true, optional = true }
+wasm-bindgen-futures = { workspace = true, optional = true }
+wslam-core.workspace = true
+wasm-bindgen.workspace = true
+js-sys.workspace = true
+log.workspace = true
+
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+console_error_panic_hook.workspace = true
+web-sys = { workspace = true, features = ["console"] }
+
+[lints]
+workspace = true

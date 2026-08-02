@@ -1,0 +1,37 @@
+[package]
+name = "wslam-scale"
+description = "L5: ScaleSource trait and implementations"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[features]
+default = []
+# spec.md §7 gates the sensor tiers with feature flags so tier-3 code does not
+# ship to tier-2 consumers. Inertial scale is the only capability tier 3 adds
+# (spec.md §4: "The *only* thing tight coupling adds is inertial metric scale").
+tight-vi = []
+# spec.md §3: `ScaleSource.learned({ model })` is "opt-in, downloads weights".
+# No weights are embedded or fetched here — the feature compiles the model seam
+# and nothing else.
+learned-scale = []
+
+[dependencies]
+# Deliberately NOT wslam-map. Every source in this crate is expressible against
+# the shared vocabulary alone: `MapScale` needs a `ScaleEstimate` anchor and a
+# relocalization variance, not a `MapDb`. A narrower edge in the layer graph
+# (spec.md §7, "Dependency direction is one-way and enforced") is strictly
+# better, so L5 depends only on wslam-core.
+wslam-core.workspace = true
+nalgebra.workspace = true
+log.workspace = true
+
+[dev-dependencies]
+approx.workspace = true
+proptest.workspace = true
+
+[lints]
+workspace = true

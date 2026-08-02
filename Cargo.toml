@@ -1,0 +1,105 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/wslam-core",
+    "crates/wslam-gpu",
+    "crates/wslam-clock",
+    "crates/wslam-orientation",
+    "crates/wslam-calib",
+    "crates/wslam-track",
+    "crates/wslam-map",
+    "crates/wslam-scale",
+    "crates/wslam",
+    "crates/wslam-wasm",
+    "harness/replay",
+    "harness/viewer",
+    "xtask",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.82"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/livekit/web-slam"
+authors = ["web-slam contributors"]
+
+# ---------------------------------------------------------------------------
+# Layer boundaries from spec.md §4 are crate boundaries. Dependency direction
+# is one-way and enforced by the compiler:
+#
+#   wslam-core        -> (nothing in-workspace)
+#   wslam-gpu         -> core
+#   wslam-clock       -> core                 (L0, feature-gated: tight-vi)
+#   wslam-orientation -> core                 (L1)
+#   wslam-calib       -> core                 (L2)
+#   wslam-track       -> core, gpu            (L3)
+#   wslam-map         -> core                 (L4)
+#   wslam-scale       -> core, map            (L5)
+#   wslam             -> all of the above     (orchestration; the ONLY crate
+#                                              aware of every layer)
+#   wslam-wasm        -> wslam, core          (thin wasm-bindgen boundary)
+#
+# If a layer needs to reach sideways, the build surfaces it immediately.
+# ---------------------------------------------------------------------------
+[workspace.dependencies]
+wslam-core = { path = "crates/wslam-core", version = "0.1.0" }
+wslam-gpu = { path = "crates/wslam-gpu", version = "0.1.0" }
+wslam-clock = { path = "crates/wslam-clock", version = "0.1.0" }
+wslam-orientation = { path = "crates/wslam-orientation", version = "0.1.0" }
+wslam-calib = { path = "crates/wslam-calib", version = "0.1.0" }
+wslam-track = { path = "crates/wslam-track", version = "0.1.0" }
+wslam-map = { path = "crates/wslam-map", version = "0.1.0" }
+wslam-scale = { path = "crates/wslam-scale", version = "0.1.0" }
+wslam = { path = "crates/wslam", version = "0.1.0" }
+wslam-viewer = { path = "harness/viewer", version = "0.1.0" }
+
+nalgebra = { version = "0.35", default-features = false, features = ["std", "macros"] }
+rand = { version = "0.10", default-features = false, features = ["std"] }
+rand_chacha = { version = "0.10", default-features = false, features = ["std"] }
+thiserror = "2.0"
+anyhow = "1.0"
+log = "0.4"
+env_logger = "0.11"
+bytemuck = { version = "1.25", features = ["derive"] }
+wgpu = "30.0"
+pollster = "1.0"
+clap = { version = "4.6", features = ["derive"] }
+image = { version = "0.25", default-features = false, features = ["png", "jpeg"] }
+rerun = { version = "0.34", default-features = false, features = ["sdk"] }
+
+wasm-bindgen = "0.2"
+wasm-bindgen-futures = "0.4"
+js-sys = "0.3"
+web-sys = "0.3"
+console_error_panic_hook = "0.1"
+
+approx = "0.5"
+proptest = "1.11"
+
+# ---------------------------------------------------------------------------
+# Workspace lints.
+# ---------------------------------------------------------------------------
+[workspace.lints.clippy]
+# `!(x > 0.0)` is used deliberately and consistently throughout as the
+# NaN-rejecting guard: it is false for NaN, where `x <= 0.0` is also false and
+# therefore lets NaN through. Clippy's suggested `partial_cmp` rewrite is
+# longer and no clearer, and mechanically "fixing" these would silently remove
+# NaN handling from every numerical entry point in the codebase.
+neg_cmp_op_on_partial_ord = "allow"
+
+[profile.release]
+opt-level = 3
+lto = "thin"
+codegen-units = 1
+panic = "abort"
+
+# Small-and-fast wasm. `panic = "abort"` above applies; wasm-opt runs in xtask.
+[profile.wasm-release]
+inherits = "release"
+opt-level = "s"
+lto = "fat"
+
+[profile.bench]
+inherits = "release"
+debug = true

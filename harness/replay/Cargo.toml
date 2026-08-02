@@ -1,0 +1,34 @@
+[package]
+name = "wslam-replay"
+description = "Native replay harness: EuRoC / TUM-VI, ATE, scale and consistency reports. Tier 2 of spec.md §6."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish = false
+
+[[bin]]
+name = "wslam-replay"
+path = "src/main.rs"
+
+[features]
+# Benchmark the GPU front-end instead of the CPU reference.
+gpu = ["wslam/gpu"]
+
+[dependencies]
+wslam-core.workspace = true
+wslam.workspace = true
+wslam-map.workspace = true
+wslam-viewer.workspace = true
+nalgebra.workspace = true
+clap.workspace = true
+anyhow.workspace = true
+log.workspace = true
+env_logger.workspace = true
+image.workspace = true
+
+[dev-dependencies]
+approx.workspace = true
+
+[lints]
+workspace = true
