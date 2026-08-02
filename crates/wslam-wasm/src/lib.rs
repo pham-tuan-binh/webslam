@@ -32,6 +32,24 @@
 #![deny(unsafe_code)]
 #![warn(missing_docs)]
 
+// The GPU front-end cannot run in a browser yet, and the failure mode is a
+// hard-locked tab rather than a slow one, so refuse to build it.
+//
+// `wslam_gpu::read_back` maps a buffer with `map_async` and then blocks on
+// `Device::poll(wait_indefinitely)` plus `mpsc::recv()`. That is correct
+// natively. On wasm, WebGPU only completes work by way of the browser event
+// loop, and blocking the single JS thread stops that loop, so the map callback
+// can never fire: a permanent deadlock on the first frame. Measured — the tab
+// stops responding to `1+1` the instant tracking starts.
+//
+// Lifting this needs `read_back` to become async and that asynchrony to reach
+// `Tracker::process`. Until then, wasm uses the CPU reference.
+#[cfg(all(feature = "gpu", target_arch = "wasm32"))]
+compile_error!(
+    "the `gpu` feature cannot target wasm32 yet: wslam-gpu's readback blocks the \
+     thread, which deadlocks the browser event loop. See crates/wslam-gpu read_back."
+);
+
 use wasm_bindgen::prelude::*;
 
 // A device acquired by `acquire_gpu`, waiting for a session to claim it.

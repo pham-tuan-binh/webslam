@@ -506,3 +506,41 @@ through the whole graph. This is precisely why ORB-SLAM uses Sim(3) for
 monocular loop closing. `wslam-core` already has the `Sim3` type; the pose graph
 and the loop measurement do not use it. That is the next substantial piece of
 work and the main remaining path to a sub-0.1 m absolute error.
+
+
+## The WebGPU front-end cannot run in a browser yet, 2026-08-02
+
+Wiring `wslam-gpu` into the wasm build hard-locks the tab on the first frame.
+Confirmed by remote-debugging the deployed page: after clicking Start,
+`Runtime.evaluate('1+1')` stops returning and never recovers. Isolated by
+building the identical page with and without the `gpu` feature — with it, the
+main thread is dead; without it, the page stays responsive, `start()` resolves,
+and the camera streams.
+
+The cause is `read_back` in `crates/wslam-gpu/src/lib.rs`:
+
+```rust
+slice.map_async(wgpu::MapMode::Read, move |r| { let _ = tx.send(r.is_ok()); });
+device.poll(wgpu::PollType::wait_indefinitely())?;
+match rx.recv() { ... }
+```
+
+Correct natively. On wasm it is a guaranteed deadlock: WebGPU only completes
+work through the browser event loop, and blocking the single JS thread on
+`rx.recv()` stops that loop, so the map callback can never fire. Both
+`detect_corners` and `track_flow` go through it, so the deadlock is immediate.
+
+`GpuContext::new_blocking` is already `#[cfg(not(target_arch = "wasm32"))]`
+with a comment saying blocking deadlocks the event loop. The same reasoning
+applies to readback and was not carried through.
+
+Lifting this needs `read_back` to become async and that asynchrony to reach
+`Tracker::process`, which is a signature change through L3. Until then a
+`compile_error!` in `wslam-wasm` rejects `gpu` + `wasm32` outright: the failure
+mode is an unresponsive tab, not a slow one, so it must not be reachable by
+accident.
+
+**Consequence for the published demo.** It runs the CPU reference front-end.
+None of the GPU figures — 1.96 ms median, ATE 0.376 m — describe it. The CPU
+path measured ~50 ms per frame on a desktop at 1000 features, and the wasm
+build defaults to 250.

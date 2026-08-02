@@ -2,9 +2,9 @@ name: demo
 
 # Builds the wasm pipeline and the demo, then publishes to GitHub Pages.
 #
-# The wasm artifact is built with the `gpu` feature: the CPU reference is
-# roughly 25x slower on the image stages, which on a phone is the difference
-# between usable and not.
+# The wasm artifact uses the CPU reference front-end. The WebGPU one is far
+# faster but cannot run in a browser yet — its readback blocks the thread and
+# deadlocks the event loop. See the compile guard in crates/wslam-wasm.
 on:
   push:
     branches: [main]

@@ -22,10 +22,11 @@ struct Cli {
 enum Task {
     /// Build the wasm artifact into `packages/web-slam/pkg/`.
     BuildWasm {
-        /// Build without the WebGPU front-end. The CPU reference is ~25x
-        /// slower on the image stages, so this is for debugging only.
+        /// Build *with* the WebGPU front-end. Currently refuses to compile:
+        /// the readback path deadlocks a browser event loop. Kept so the fix
+        /// can be tested the moment readback becomes async.
         #[arg(long)]
-        no_gpu: bool,
+        gpu: bool,
         /// Optimise for size and run `wasm-opt`. Off for fast iteration.
         #[arg(long)]
         release: bool,
@@ -107,8 +108,8 @@ fn main() -> Result<()> {
         Task::BuildWasm {
             release,
             threads,
-            no_gpu,
-        } => build_wasm(release, threads, no_gpu),
+            gpu,
+        } => build_wasm(release, threads, gpu),
         Task::Test { tier } => test(tier),
         Task::Replay { sequence, rrd } => replay(&sequence, rrd.as_deref()),
         Task::RegenBaselines { confirm } => regen_baselines(confirm),
@@ -156,7 +157,7 @@ fn have(program: &str) -> bool {
         .unwrap_or(false)
 }
 
-fn build_wasm(release: bool, threads: bool, no_gpu: bool) -> Result<()> {
+fn build_wasm(release: bool, threads: bool, gpu: bool) -> Result<()> {
     let root = root();
     if !have("wasm-bindgen") {
         bail!("wasm-bindgen-cli is missing. Install it with:\n  cargo install wasm-bindgen-cli");
@@ -176,7 +177,7 @@ fn build_wasm(release: bool, threads: bool, no_gpu: bool) -> Result<()> {
     if threads {
         features.push("threads");
     }
-    if !no_gpu {
+    if gpu {
         features.push("gpu");
     }
     let joined = features.join(",");
