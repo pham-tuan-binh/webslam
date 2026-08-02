@@ -246,7 +246,11 @@ fn main() -> Result<()> {
                 }
             }
             std::fs::write(&out, &bytes)?;
-            println!("wrote {} descriptors to {}", bytes.len() / 32, out.display());
+            println!(
+                "wrote {} descriptors to {}",
+                bytes.len() / 32,
+                out.display()
+            );
             Ok(())
         }
         Command::TrainVocab {
@@ -260,6 +264,10 @@ fn main() -> Result<()> {
 }
 
 /// Replay one sequence end to end.
+// Every argument is a CLI ablation knob. Grouping them into a struct
+// would move the same list one level down and make the call sites read
+// worse, so the lint is allowed rather than worked around.
+#[allow(clippy::too_many_arguments)]
 fn replay(
     path: &std::path::Path,
     limit: Option<usize>,
@@ -412,7 +420,9 @@ fn replay(
         for e in slam.take_events() {
             match e {
                 wslam::SlamEvent::LoopClosure { accepted: true, .. } => loops_accepted += 1,
-                wslam::SlamEvent::LoopClosure { accepted: false, .. } => loops_rejected += 1,
+                wslam::SlamEvent::LoopClosure {
+                    accepted: false, ..
+                } => loops_rejected += 1,
                 wslam::SlamEvent::Relocalized { .. } => relocalizations += 1,
                 _ => {}
             }
@@ -505,34 +515,35 @@ fn replay(
     // emitted frame by frame. Loop closure corrects keyframes; without this the
     // correction is invisible to every metric.
     let refined = slam.refined_trajectory();
-    let estimated = if refined_trajectory && refined.len() >= estimated.len() / 2 && !refined.is_empty() {
-        log::info!(
-            "evaluating {} refined poses (emitted {})",
-            refined.len(),
-            estimated.len()
-        );
-        refined
-            .into_iter()
-            .map(|(timestamp, pose)| Stamped {
-                timestamp,
-                // The same camera -> body conversion the emitted path applies.
-                // Omitting it here was not a small offset: a single Sim(3)
-                // cannot absorb a lever arm that rotates with the body, so
-                // absolute error survived while inter-frame RPE went from
-                // 0.130 deg to 0.834 deg. The bug is the frame convention, not
-                // the reconstruction.
-                pose: match sequence.body_from_camera_se3 {
-                    Some(t_bc) => pose.compose(&t_bc.inverse()),
-                    None => pose,
-                },
-                // The refined trajectory is anchored to one pose graph, so it
-                // is by construction a single coordinate frame.
-                epoch: 0,
-            })
-            .collect()
-    } else {
-        estimated
-    };
+    let estimated =
+        if refined_trajectory && refined.len() >= estimated.len() / 2 && !refined.is_empty() {
+            log::info!(
+                "evaluating {} refined poses (emitted {})",
+                refined.len(),
+                estimated.len()
+            );
+            refined
+                .into_iter()
+                .map(|(timestamp, pose)| Stamped {
+                    timestamp,
+                    // The same camera -> body conversion the emitted path applies.
+                    // Omitting it here was not a small offset: a single Sim(3)
+                    // cannot absorb a lever arm that rotates with the body, so
+                    // absolute error survived while inter-frame RPE went from
+                    // 0.130 deg to 0.834 deg. The bug is the frame convention, not
+                    // the reconstruction.
+                    pose: match sequence.body_from_camera_se3 {
+                        Some(t_bc) => pose.compose(&t_bc.inverse()),
+                        None => pose,
+                    },
+                    // The refined trajectory is anchored to one pose graph, so it
+                    // is by construction a single coordinate frame.
+                    epoch: 0,
+                })
+                .collect()
+        } else {
+            estimated
+        };
 
     Ok(SequenceReport::build(
         &sequence,
@@ -609,7 +620,10 @@ fn regress(
 
     for path in &sequences {
         log::info!("replaying {}", path.display());
-        let report = replay(path, None, rrd, seed, false, 2, "auto", None, None, false, None, None, None, None, false, false, None, None)?;
+        let report = replay(
+            path, None, rrd, seed, false, 2, "auto", None, None, false, None, None, None, None,
+            false, false, None, None,
+        )?;
         println!("{}", report.summary());
 
         match baselines.get(&report.name) {

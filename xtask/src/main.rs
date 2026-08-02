@@ -104,7 +104,11 @@ enum Dataset {
 
 fn main() -> Result<()> {
     match Cli::parse().task {
-        Task::BuildWasm { release, threads, no_gpu } => build_wasm(release, threads, no_gpu),
+        Task::BuildWasm {
+            release,
+            threads,
+            no_gpu,
+        } => build_wasm(release, threads, no_gpu),
         Task::Test { tier } => test(tier),
         Task::Replay { sequence, rrd } => replay(&sequence, rrd.as_deref()),
         Task::RegenBaselines { confirm } => regen_baselines(confirm),

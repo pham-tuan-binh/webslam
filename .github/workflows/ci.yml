@@ -121,6 +121,10 @@ jobs:
           cache: pnpm
 
       - run: pnpm install --frozen-lockfile
+      # The demo resolves `web-slam` through its package exports, which point
+      # into dist/. Typechecking before that exists fails on every import and
+      # then cascades into implicit-any noise that hides the real cause.
+      - run: pnpm --filter web-slam build
       - run: pnpm -r typecheck
       - run: pnpm -r test
       - run: pnpm -r build

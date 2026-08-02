@@ -111,6 +111,10 @@ pub struct SequenceReport {
 
 impl SequenceReport {
     /// Compute every metric from a completed replay.
+    // Every argument is a CLI ablation knob. Grouping them into a struct
+    // would move the same list one level down and make the call sites read
+    // worse, so the lint is allowed rather than worked around.
+    #[allow(clippy::too_many_arguments)]
     pub fn build(
         sequence: &Sequence,
         estimated: &[Stamped],
@@ -269,10 +273,7 @@ impl SequenceReport {
                 ));
             }
         }
-        for (label, m) in [
-            ("inter-frame", self.rpe_frame),
-            ("short", self.rpe_short),
-        ] {
+        for (label, m) in [("inter-frame", self.rpe_frame), ("short", self.rpe_short)] {
             if let Some((t, r, delta)) = m {
                 out.push_str(&format!(
                     "  RPE {label:<11} {:.4} m, {:.3} deg  over {delta:.3}s\n",
@@ -313,10 +314,7 @@ impl SequenceReport {
         ));
         out.push_str(&format!(
             "  stage mean ms     pyramid {:.1}, corners {:.1}, flow {:.1}, pnp {:.1}\n",
-            self.stages.pyramid_ms,
-            self.stages.corners_ms,
-            self.stages.flow_ms,
-            self.stages.pnp_ms,
+            self.stages.pyramid_ms, self.stages.corners_ms, self.stages.flow_ms, self.stages.pnp_ms,
         ));
         out.push_str(&format!(
             "  frame time        median {:.2} ms, p99 {:.2} ms\n",

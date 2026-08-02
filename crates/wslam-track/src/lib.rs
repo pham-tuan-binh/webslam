@@ -42,8 +42,8 @@ pub mod tracker;
 pub mod triangulate;
 
 pub use tracker::{
-    Backend, Feature, FeatureState, LocalLandmark, LocalMap, StageTimings, TrackConfig,
-    FailureCounts, TrackOutcome, Tracker,
+    Backend, FailureCounts, Feature, FeatureState, LocalLandmark, LocalMap, StageTimings,
+    TrackConfig, TrackOutcome, Tracker,
 };
 #[cfg(feature = "gpu")]
 pub use wslam_gpu::GpuContext;

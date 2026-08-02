@@ -34,10 +34,10 @@
 
 use wasm_bindgen::prelude::*;
 
-/// A device acquired by [`acquire_gpu`], waiting for a session to claim it.
-///
-/// A thread-local rather than a field because the acquisition has to be a free
-/// async function; wasm is single-threaded so there is no contention.
+// A device acquired by `acquire_gpu`, waiting for a session to claim it.
+//
+// A thread-local rather than a field because the acquisition has to be a free
+// async function; wasm is single-threaded so there is no contention.
 #[cfg(feature = "gpu")]
 thread_local! {
     static PENDING_GPU: std::cell::RefCell<Option<wslam_track::GpuContext>> =
@@ -269,7 +269,6 @@ impl WasmSlam {
             None => false,
         }
     }
-
 
     /// Feed one camera frame as tightly-packed RGBA.
     ///

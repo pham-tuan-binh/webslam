@@ -37,8 +37,8 @@ use wslam_core::{
 use crate::corners::{self, CornerConfig};
 use crate::init::{self, InitConfig};
 use crate::klt::{self, KltConfig};
-use crate::motion_ba::{self, MotionBaConfig};
 use crate::local_ba;
+use crate::motion_ba::{self, MotionBaConfig};
 use crate::motion_ba::{pinhole_only, project_pinhole};
 use crate::pnp;
 use crate::pyramid::{Pyramid, PyramidConfig};
@@ -485,10 +485,9 @@ pub enum Backend {
 /// the one structural difference from the CPU path.
 #[cfg(feature = "gpu")]
 struct GpuFrontend {
-    /// The device, kept so the pipeline can be rebuilt if the frame size
-    /// changes. On wasm this is the *only* way a context arrives: acquiring one
-    /// there is async, and `GpuContext::new_blocking` deliberately does not
-    /// exist for wasm because blocking the event loop deadlocks.
+    /// The device. Held for the pipeline's lifetime: `ImagePipeline` borrows it
+    /// at construction, and dropping it would take the device with it.
+    #[allow(dead_code)]
     context: wslam_gpu::GpuContext,
     pipeline: wslam_gpu::ImagePipeline,
     /// False until a first frame has been uploaded and swapped in, because
@@ -1291,8 +1290,8 @@ impl Tracker {
         // for monocular, and `mnMatchesInliers > 15` so a genuinely dying track
         // stops asking for keyframes it cannot support.
         let tracked = self.tracked_landmark_count();
-        let starved = tracked < (self.reference_landmarks as Scalar
-            * self.config.keyframe_tracked_ratio) as usize
+        let starved = tracked
+            < (self.reference_landmarks as Scalar * self.config.keyframe_tracked_ratio) as usize
             && tracked > self.config.keyframe_min_tracked;
 
         if !(translated || rotated || starved) {
@@ -1556,9 +1555,9 @@ impl Tracker {
             };
             match wslam_gpu::ImagePipeline::new(
                 &context,
-                image.width() as u32,
-                image.height() as u32,
-                self.config.pyramid_levels as u32,
+                image.width(),
+                image.height(),
+                self.config.pyramid_levels,
             ) {
                 Ok(pipeline) => {
                     self.gpu = Some(GpuFrontend {
@@ -1589,7 +1588,11 @@ impl Tracker {
     /// Track features on the GPU. `None` means the caller should use the CPU
     /// path — either the GPU is not in use, or there is no previous frame yet.
     #[cfg(feature = "gpu")]
-    fn gpu_track_flow(&mut self, points: &[Vec2], guesses: Option<&[Vec2]>) -> Option<Vec<klt::KltTrack>> {
+    fn gpu_track_flow(
+        &mut self,
+        points: &[Vec2],
+        guesses: Option<&[Vec2]>,
+    ) -> Option<Vec<klt::KltTrack>> {
         if self.backend != Backend::Gpu {
             return None;
         }
@@ -1618,8 +1621,8 @@ impl Tracker {
         let seeds: Vec<(f32, f32)> = points.iter().map(|p| (p.x as f32, p.y as f32)).collect();
         let flow_config = wslam_gpu::FlowConfig {
             // The GPU takes a full side length; the CPU config a radius.
-            window: (config.window_radius as u32) * 2 + 1,
-            iterations: config.max_iterations as u32,
+            window: config.window_radius * 2 + 1,
+            iterations: config.max_iterations,
             epsilon: config.epsilon as f32,
             max_error: config.max_error as f32,
         };
@@ -1723,11 +1726,7 @@ impl Tracker {
                     px: Vec2::new(x as Scalar, y as Scalar),
                     response: response as Scalar,
                 })
-                .filter(|c| {
-                    occupied
-                        .iter()
-                        .all(|o| (c.px - o).norm_squared() >= min_d2)
-                })
+                .filter(|c| occupied.iter().all(|o| (c.px - o).norm_squared() >= min_d2))
                 .take(config.max_corners)
                 .collect(),
         )

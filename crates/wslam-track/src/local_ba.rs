@@ -299,9 +299,8 @@ fn accumulate(
             continue;
         }
 
-        let j_pose: Option<Matrix2x6<Scalar>> = pose_free.and(
-            pose_jacobian(pose, point, k).map(|(_, j)| j),
-        );
+        let j_pose: Option<Matrix2x6<Scalar>> =
+            pose_free.and(pose_jacobian(pose, point, k).map(|(_, j)| j));
         let j_point = point_free.map(|_| point_jacobian(pose, &p_cam, k));
 
         if let (Some(slot), Some(jp)) = (pose_free, j_pose) {
@@ -495,14 +494,14 @@ pub fn optimize(
     // jointly across the window using every observation, without the solve
     // being able to walk the reconstruction outward.
     let config = &if scale_is_observable {
-        config.clone()
+        *config
     } else {
         LocalBaConfig {
             // A landmark can never reach this many observations, so none are
             // freed. Expressing it through the existing threshold keeps one
             // code path rather than two.
             min_observations: usize::MAX,
-            ..config.clone()
+            ..*config
         }
     };
     let layout = Layout::new(problem, config);
@@ -768,12 +767,8 @@ mod tests {
         let r = optimize(&problem, &k, &LocalBaConfig::default()).expect("solve");
         // Gauge anchors are load-bearing: if they drift, the whole window slides
         // relative to the map behind it and the fix is worse than the problem.
-        for i in 0..2 {
-            assert_relative_eq!(
-                r.poses[i].translation(),
-                poses[i].translation(),
-                epsilon = 1e-15
-            );
+        for (got, want) in r.poses.iter().zip(poses.iter()).take(2) {
+            assert_relative_eq!(got.translation(), want.translation(), epsilon = 1e-15);
         }
     }
 
@@ -906,7 +901,7 @@ mod tests {
         let k = intrinsics();
         let (mut poses, points) = scene(6, 60, 1);
         // Collapse the anchors onto each other, leaving the rest of the window.
-        poses[1] = poses[0].clone();
+        poses[1] = poses[0];
         let observations = observe(&poses, &points, &k);
         let problem = LocalBaProblem {
             poses,
