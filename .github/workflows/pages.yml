@@ -44,9 +44,11 @@ jobs:
           echo "wasm-bindgen $version"
           cargo install wasm-bindgen-cli --version "$version" --locked
 
+      # No `version:` here on purpose. package.json pins
+      # `packageManager: pnpm@...`, and action-setup@v4 fails with
+      # ERR_PNPM_BAD_PM_VERSION when both declare a version. One source of
+      # truth, and it is the one pnpm itself already enforces locally.
       - uses: pnpm/action-setup@v4
-        with:
-          version: 9
 
       - uses: actions/setup-node@v4
         with:
