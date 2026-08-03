@@ -52,6 +52,23 @@ const MIN_PNP_CORRESPONDENCES: usize = 6;
 /// rather than limited. One dropped frame is an occlusion; three is a loss.
 const LOST_AFTER_FAILURES: u32 = 3;
 
+/// Consecutive solve failures before the local map is discarded and the
+/// tracker re-initialises from scratch.
+///
+/// Deliberately much larger than [`LOST_AFTER_FAILURES`]. Reporting `Lost`
+/// early is cheap and correct — the consumer should stop trusting the pose. But
+/// *discarding the map* forfeits any chance of relocalizing back into the
+/// coordinate frame the caller has already anchored content to, so it waits
+/// until recovery-in-place has plainly failed. At 30 Hz this is about a second.
+const ABANDON_MAP_AFTER_FAILURES: u32 = 30;
+
+/// Frames a two-view bootstrap reference is kept before a fresh one is taken.
+///
+/// A reference that has not produced a map in this long is not going to: either
+/// the view has changed too much to match it, or it was taken on a frame with
+/// nothing in it. At 30 Hz this is about a second and a half.
+const BOOTSTRAP_REFERENCE_TTL_FRAMES: u64 = 45;
+
 /// Per-frame covariance inflation while coasting on a stale pose. Reporting the
 /// last solve's covariance for a pose that is now several frames old is exactly
 /// the overconfidence spec.md §6 L6 calls "worse than no covariance at all".
@@ -795,6 +812,39 @@ impl Tracker {
         let mut solve = self.solve_pose(frame);
         self.timings.pnp_ms = self.lap(&mut mark);
 
+        // --- abandon a map we can no longer see -------------------------
+        //
+        // Recovery used to be impossible. The branch below takes the keyframe
+        // path whenever `pose.is_some() && !map.is_empty()`, and after the
+        // first successful track both stay true forever — `pose` holds the last
+        // known pose and the landmarks are still in memory. So a tracker that
+        // lost the scene kept solving PnP against a map it could not see,
+        // failed on every frame, and sat in `Lost` until the page was reloaded.
+        // `try_bootstrap` was unreachable.
+        //
+        // Once the failures are decisive, throw the map away and take a fresh
+        // reference view. Relocalizing into the *existing* map would be better
+        // and is what L4 is for, but it needs a trained vocabulary; re-entering
+        // `Tracking` on a new coordinate frame beats never tracking again. The
+        // session reports it as an `OriginReset`, so a consumer holding
+        // world-anchored content knows to drop it.
+        if self.solve_failures >= ABANDON_MAP_AFTER_FAILURES && !self.map.is_empty() {
+            log::info!(
+                "abandoning the local map after {} consecutive solve failures; \
+                 re-initialising",
+                self.solve_failures
+            );
+            self.map = LocalMap::new();
+            self.pose = None;
+            self.keyframe = None;
+            self.window.clear();
+            self.reference_landmarks = 0;
+            self.bootstrap = None;
+            for f in &mut self.features {
+                f.landmark = None;
+            }
+        }
+
         // --- bootstrap / keyframe / refill ------------------------------
         let mut is_keyframe = false;
         let mut bootstrapped = false;
@@ -838,6 +888,27 @@ impl Tracker {
                 for f in &self.features {
                     kf.observations.entry(f.id).or_insert(f.px_undist);
                 }
+            }
+        }
+        // A reference view goes stale. If it was taken while the camera saw
+        // nothing — a blank wall, a covered lens, the moment right after the
+        // map was abandoned — it holds too few observations to ever match, and
+        // because `bootstrap.is_some()` the arming branch below never fires
+        // again. The tracker then sits in `Initializing` forever with a
+        // perfectly good scene in front of it. Measured: recovery failed
+        // exactly this way.
+        //
+        // Refresh it when it cannot plausibly succeed, or when it simply has
+        // not for a while: a reference from too long ago has too much parallax
+        // and too little overlap to match either.
+        if self.map.is_empty() {
+            let stale = self.bootstrap.as_ref().is_some_and(|r| {
+                r.observations.len() < MIN_BOOTSTRAP_MATCHES
+                    || self.frames_since_keyframe > BOOTSTRAP_REFERENCE_TTL_FRAMES
+            });
+            if stale {
+                self.bootstrap = None;
+                self.frames_since_keyframe = 0;
             }
         }
         if self.bootstrap.is_none() && self.map.is_empty() {
@@ -2533,5 +2604,62 @@ mod tests {
         for l in map.landmarks() {
             assert!(map.get(l.id).is_some());
         }
+    }
+
+    #[test]
+    fn a_tracker_that_loses_the_scene_recovers_on_its_own() {
+        // The regression this exists for: `pose.is_some() && !map.is_empty()`
+        // stays true forever once tracking has succeeded once, so the bootstrap
+        // branch was unreachable and a lost tracker never tracked again. A user
+        // who covered the lens for a second had to reload the page.
+        let k = intrinsics();
+        let world = scene(180, 7);
+        let mut tracker = Tracker::new(TrackConfig::default(), k);
+
+        for i in 0..30 {
+            let image = render(&world, &truth_pose(i), &k, 1.0);
+            tracker.process(&frame(i, image), None);
+        }
+        assert_eq!(
+            tracker.state(),
+            TrackingState::Tracking,
+            "precondition: should be tracking before the scene is taken away"
+        );
+
+        // A featureless view: nothing to track, so PnP cannot succeed. Long
+        // enough to pass the abandonment threshold, checking `Lost` on the way.
+        let blank = GrayImage::from_vec(
+            k.width,
+            k.height,
+            vec![128u8; (k.width * k.height) as usize],
+        );
+        let mut reported_lost = false;
+        for i in 30..(30 + ABANDON_MAP_AFTER_FAILURES as usize + 6) {
+            if tracker.process(&frame(i, blank.clone()), None).state == TrackingState::Lost {
+                reported_lost = true;
+            }
+        }
+        assert!(
+            reported_lost,
+            "a blank scene must be reported as Lost before the map is abandoned, \
+             so a consumer knows to stop trusting the pose"
+        );
+
+        // Give the scene back, from where the camera actually was. Continuing
+        // `truth_pose` forward would fly past the landmarks and test nothing.
+        let mut recovered = false;
+        let resume = 30 + ABANDON_MAP_AFTER_FAILURES as usize + 6;
+        for (n, i) in (resume..resume + 60).enumerate() {
+            let image = render(&world, &truth_pose(n), &k, 1.0);
+            if tracker.process(&frame(i, image), None).state == TrackingState::Tracking {
+                recovered = true;
+                break;
+            }
+        }
+        assert!(
+            recovered,
+            "never re-entered Tracking after the scene returned; state is {:?}",
+            tracker.state()
+        );
     }
 }

@@ -16,6 +16,20 @@ const MAX_TRAJECTORY_POINTS = 12_000;
 
 export class SceneView {
   readonly camera: THREE.PerspectiveCamera;
+  /**
+   * Free camera for the map view.
+   *
+   * The AR camera is driven by the pose estimate, which makes it useless for
+   * judging the estimate: everything is nailed to the viewport and a drifting
+   * map looks identical to a perfect one. This one sits outside the
+   * reconstruction and looks at it.
+   */
+  readonly mapCamera: THREE.PerspectiveCamera;
+  /** Which camera renders. `map` also draws the live pose as a frustum. */
+  private mode: 'ar' | 'map' = 'ar';
+  private readonly liveFrustum: THREE.Object3D;
+  private readonly reference: THREE.Group;
+  private orbit = { theta: 0.7, phi: 1.05, radius: 4, target: new THREE.Vector3() };
   private readonly renderer: THREE.WebGLRenderer;
   private readonly scene = new THREE.Scene();
 
@@ -39,6 +53,28 @@ export class SceneView {
     this.camera = new THREE.PerspectiveCamera(60, 1, 0.01, 100);
     // web-slam supplies the full world matrix; three must not recompose it.
     this.camera.matrixAutoUpdate = false;
+
+    // The map camera is ordinary: three composes it from the orbit state.
+    this.mapCamera = new THREE.PerspectiveCamera(55, 1, 0.01, 500);
+
+    // A metre grid and axes. Without a fixed reference the point cloud has no
+    // sense of scale or orientation and every reconstruction looks plausible.
+    this.reference = new THREE.Group();
+    const grid = new THREE.GridHelper(10, 20, 0x334155, 0x1e293b);
+    (grid.material as THREE.Material).transparent = true;
+    (grid.material as THREE.Material).opacity = 0.5;
+    this.reference.add(grid);
+    this.reference.add(new THREE.AxesHelper(0.5));
+    this.reference.visible = false;
+    this.scene.add(this.reference);
+
+    // The live pose, drawn the same way keyframes are so the two are directly
+    // comparable: if the live frustum drifts away from the trail of keyframes,
+    // that is the drift, visible.
+    this.liveFrustum = makeFrustum(0xf472b6, 0.12);
+    this.liveFrustum.matrixAutoUpdate = false;
+    this.liveFrustum.visible = false;
+    this.scene.add(this.liveFrustum);
 
     this.landmarkGeometry.setAttribute(
       'position',
@@ -95,6 +131,8 @@ export class SceneView {
     this.renderer.setSize(w, h, false);
     this.camera.aspect = w / h;
     this.camera.updateProjectionMatrix();
+    this.mapCamera.aspect = w / h;
+    this.mapCamera.updateProjectionMatrix();
   }
 
   setLandmarks(packed: Float32Array): void {
@@ -147,24 +185,83 @@ export class SceneView {
     this.uncertainty.quaternion.setFromRotationMatrix(m);
   }
 
+  /** Switch between the AR overlay and the external map view. */
+  setMode(mode: 'ar' | 'map'): void {
+    this.mode = mode;
+    this.reference.visible = mode === 'map';
+    this.liveFrustum.visible = mode === 'map';
+    if (mode === 'map') this.frameScene();
+  }
+
+  /** Which view is active. */
+  get viewMode(): 'ar' | 'map' {
+    return this.mode;
+  }
+
+  /** Place the live camera frustum from the current pose. */
+  setLivePose(matrix: Float32Array): void {
+    this.liveFrustum.matrix.fromArray(matrix);
+  }
+
+  /** Orbit the map camera. Angles in radians, radius multiplied. */
+  orbitBy(dTheta: number, dPhi: number, dRadius = 1): void {
+    this.orbit.theta += dTheta;
+    // Stop just short of the poles, where the up vector flips and the view
+    // snaps through itself.
+    this.orbit.phi = Math.min(Math.PI - 0.05, Math.max(0.05, this.orbit.phi + dPhi));
+    this.orbit.radius = Math.min(200, Math.max(0.2, this.orbit.radius * dRadius));
+  }
+
+  /**
+   * Point the map camera at the reconstruction and back off far enough to see
+   * all of it.
+   *
+   * Without this the map view opens on an empty frame whenever the map is not
+   * near the origin at unit scale, which reads as "nothing is working".
+   */
+  frameScene(): void {
+    const attr = this.landmarkGeometry.getAttribute('position') as THREE.BufferAttribute;
+    const n = this.landmarkGeometry.drawRange.count;
+    if (!n) return;
+    const a = attr.array as Float32Array;
+    const box = new THREE.Box3();
+    const v = new THREE.Vector3();
+    for (let i = 0; i < n; i++) {
+      v.set(a[i * 3], a[i * 3 + 1], a[i * 3 + 2]);
+      if (Number.isFinite(v.x) && Number.isFinite(v.y) && Number.isFinite(v.z)) box.expandByPoint(v);
+    }
+    if (box.isEmpty()) return;
+    box.getCenter(this.orbit.target);
+    this.orbit.radius = Math.max(0.4, box.getBoundingSphere(new THREE.Sphere()).radius * 2.4);
+  }
+
   /** Brief visual confirmation that the session recovered into the map. */
   flashRelocalization(): void {
     this.relocFlash = 1;
   }
 
   render(): void {
+    if (this.mode === 'map') {
+      const { theta, phi, radius, target } = this.orbit;
+      this.mapCamera.position.set(
+        target.x + radius * Math.sin(phi) * Math.cos(theta),
+        target.y + radius * Math.cos(phi),
+        target.z + radius * Math.sin(phi) * Math.sin(theta),
+      );
+      this.mapCamera.lookAt(target);
+    }
     if (this.relocFlash > 0) {
       this.relocFlash = Math.max(0, this.relocFlash - 0.03);
       const material = this.landmarks.material as THREE.PointsMaterial;
       material.color.setHex(0xffffff).lerp(new THREE.Color(0x5eead4), 1 - this.relocFlash);
       material.size = 0.018 + this.relocFlash * 0.02;
     }
-    this.renderer.render(this.scene, this.camera);
+    this.renderer.render(this.scene, this.mode === 'map' ? this.mapCamera : this.camera);
   }
 }
 
 /** A small wireframe camera frustum, drawn once per keyframe. */
-function makeFrustum(scale = 0.06): THREE.LineSegments {
+function makeFrustum(color = 0x8b93a7, scale = 0.06): THREE.LineSegments {
   const d = scale;
   const w = scale * 0.8;
   const h = scale * 0.55;
@@ -186,6 +283,6 @@ function makeFrustum(scale = 0.06): THREE.LineSegments {
   geometry.setAttribute('position', new THREE.BufferAttribute(points, 3));
   return new THREE.LineSegments(
     geometry,
-    new THREE.LineBasicMaterial({ color: 0x8b93a7, transparent: true, opacity: 0.5 }),
+    new THREE.LineBasicMaterial({ color, transparent: true, opacity: 0.9 }),
   );
 }

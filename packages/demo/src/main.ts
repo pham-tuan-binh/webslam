@@ -32,6 +32,7 @@ const video = el<HTMLVideoElement>('feed');
 const canvas = el<HTMLCanvasElement>('scene');
 const gate = el('gate');
 const startButton = el<HTMLButtonElement>('start');
+const viewToggle = el<HTMLButtonElement>('view-toggle');
 const gateError = el('gate-error');
 const stateDot = el('state-dot');
 const stateLabel = el('state-label');
@@ -147,6 +148,45 @@ async function main(): Promise<void> {
 
   const sync = new CameraSync(scene.camera, { holdOnLoss: true });
 
+  // The AR view is driven by the pose, so a drifting map and a perfect one look
+  // identical through it. The map view puts the reconstruction in front of you:
+  // landmark cloud, keyframe frusta, the trajectory, and the live pose as a
+  // larger pink frustum. If that frustum wanders off the keyframe trail, that
+  // is the drift.
+  viewToggle.addEventListener('click', () => {
+    const next = scene.viewMode === 'ar' ? 'map' : 'ar';
+    scene.setMode(next);
+    viewToggle.textContent = `view: ${next === 'map' ? 'map' : 'AR'}`;
+    video.style.opacity = next === 'map' ? '0.12' : '1';
+  });
+
+  // Drag to orbit, pinch or wheel to zoom. Deliberately hand-rolled: the demo
+  // ships to a phone and OrbitControls is a large dependency for two gestures.
+  let drag: { x: number; y: number } | null = null;
+  let pinch = 0;
+  canvas.addEventListener('pointerdown', (e) => {
+    if (scene.viewMode === 'map') drag = { x: e.clientX, y: e.clientY };
+  });
+  addEventListener('pointerup', () => (drag = null));
+  addEventListener('pointermove', (e) => {
+    if (!drag) return;
+    scene.orbitBy((e.clientX - drag.x) * -0.008, (e.clientY - drag.y) * -0.008);
+    drag = { x: e.clientX, y: e.clientY };
+  });
+  canvas.addEventListener('wheel', (e) => {
+    if (scene.viewMode !== 'map') return;
+    e.preventDefault();
+    scene.orbitBy(0, 0, e.deltaY > 0 ? 1.1 : 0.9);
+  }, { passive: false });
+  canvas.addEventListener('touchmove', (e) => {
+    if (scene.viewMode !== 'map' || e.touches.length !== 2) return;
+    const [a, b] = [e.touches[0], e.touches[1]];
+    const d = Math.hypot(a.clientX - b.clientX, a.clientY - b.clientY);
+    if (pinch) scene.orbitBy(0, 0, pinch / d);
+    pinch = d;
+  }, { passive: true });
+  addEventListener('touchend', () => (pinch = 0));
+
   slam.onState((state) => {
     const { key, label } = describeState(state);
     stateDot.dataset.state = key;
@@ -193,6 +233,7 @@ async function main(): Promise<void> {
     // ---- the entire default integration ----
     const pose = slam.currentPose();
     if (pose) sync.update(pose);
+    if (pose) scene.setLivePose(pose.matrix);
     // ----------------------------------------
 
     if (pose) {
