@@ -72,6 +72,8 @@ const FEATURE_STATES: FeatureState[] = ['new', 'tracked', 'outlier', 'lost'];
 /** The surface `wslam-wasm` exposes. Structural, so the import stays optional. */
 export interface WasmModule {
   default?: (input?: unknown) => Promise<unknown>;
+  /** Routes Rust `log` records to the console. Without it they are discarded. */
+  init_logging?: (level: string) => void;
   WasmSlam: {
     new (configJson: string): WasmSlamHandle;
   };
@@ -200,6 +202,9 @@ export class WasmBackend implements Backend {
     if (typeof module.default === 'function') {
       await module.default(wasmUrl);
     }
+    // Before anything else: without this every log record the pipeline emits
+    // is thrown away, and a failure in the browser has no diagnostic at all.
+    module.init_logging?.('info');
     return new WasmBackend(module);
   }
 

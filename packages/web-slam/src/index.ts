@@ -175,6 +175,7 @@ export class WebSlam implements WebSlamApi {
 
     const track = await this.camera.open(this.options.cameraConstraints);
     const settings = track.getSettings();
+    const processing = this.camera.processingDimensions();
 
     let motionAvailable = false;
     let tier: SensorTier = this.options.tier;
@@ -194,8 +195,12 @@ export class WebSlam implements WebSlamApi {
       map: this.options.map,
       seed: this.options.seed,
       focalPrior: this.options.focalPrior,
-      width: settings.width ?? this.options.video.videoWidth ?? 1280,
-      height: settings.height ?? this.options.video.videoHeight ?? 720,
+      // The size frames are *processed* at, which the camera shim may have
+      // scaled down from the native capture size. Intrinsics come from these
+      // dimensions, so a mismatch here is a two-fold error in the focal guess
+      // and principal point.
+      width: processing.width || settings.width || this.options.video.videoWidth || 1280,
+      height: processing.height || settings.height || this.options.video.videoHeight || 720,
       motionAvailable,
     });
 

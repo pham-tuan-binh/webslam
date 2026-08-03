@@ -121,6 +121,19 @@ export class CameraShim {
   private index = 0;
   private running = false;
   private onFrame: ((frame: RawFrame) => void) | null = null;
+  /**
+   * Longest edge, in pixels, that frames are scaled to before tracking.
+   *
+   * A phone camera hands us 1280x720 or larger, which is 2.5x the pixel count
+   * the tracker was tuned at and costs that much in the pyramid, corner and
+   * flow stages — the three that dominate the frame budget. Nothing in
+   * monocular SLAM benefits from that resolution: corner localisation is
+   * sub-pixel either way. Scaling happens inside `drawImage`, so it is free
+   * relative to the `getImageData` it shrinks.
+   */
+  private targetLongEdge = 640;
+  /** The size frames are actually delivered at, after scaling. */
+  processingSize: { width: number; height: number } | null = null;
 
   constructor(video: HTMLVideoElement) {
     this.video = video;
@@ -150,6 +163,20 @@ export class CameraShim {
     const [track] = this.stream.getVideoTracks();
     if (!track) throw new Error('web-slam: camera stream has no video track');
     return track;
+  }
+
+  /**
+   * The size frames will be delivered at, given the camera's native size.
+   *
+   * The caller needs this *before* the first frame: intrinsics are derived
+   * from the image dimensions, and configuring the pipeline for 1280x720 while
+   * feeding it 640x360 puts the principal point and focal guess out by a
+   * factor of two, which no bootstrap survives.
+   */
+  processingDimensions(): { width: number; height: number } {
+    const size = scaleToLongEdge(this.video.videoWidth, this.video.videoHeight, this.targetLongEdge);
+    this.processingSize = size;
+    return size;
   }
 
   /** Begin delivering frames. */
@@ -187,11 +214,14 @@ export class CameraShim {
     // attribute to the sensor.
     const arrivalMs = performance.now();
 
-    const width = this.video.videoWidth;
-    const height = this.video.videoHeight;
+    const nativeW = this.video.videoWidth;
+    const nativeH = this.video.videoHeight;
+    const { width, height } = scaleToLongEdge(nativeW, nativeH, this.targetLongEdge);
     if (width > 0 && height > 0 && this.onFrame) {
       const ctx = this.context(width, height);
       if (ctx) {
+        // Scale during the blit. The destination rect is the processing size,
+        // so getImageData reads the smaller buffer.
         ctx.drawImage(this.video as CanvasImageSource, 0, 0, width, height);
         const image = ctx.getImageData(0, 0, width, height);
         this.onFrame({
@@ -251,6 +281,27 @@ export class CameraShim {
     this.video.srcObject = null;
     this.onFrame = null;
   }
+}
+
+/**
+ * Fit `(w, h)` inside `longEdge` without changing aspect ratio.
+ *
+ * Never upscales: a camera that already hands us something small is giving us
+ * all the information there is, and inventing pixels would cost time without
+ * adding a single corner.
+ */
+export function scaleToLongEdge(
+  w: number,
+  h: number,
+  longEdge: number,
+): { width: number; height: number } {
+  if (w <= 0 || h <= 0) return { width: 0, height: 0 };
+  const longest = Math.max(w, h);
+  if (longest <= longEdge) return { width: w, height: h };
+  const k = longEdge / longest;
+  // Even dimensions keep the pyramid's halving exact at the first level.
+  const even = (v: number) => Math.max(2, Math.round(v * k / 2) * 2);
+  return { width: even(w), height: even(h) };
 }
 
 /** Forwards `devicemotion` events, unmodified. */

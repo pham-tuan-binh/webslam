@@ -140,6 +140,11 @@ async function main(): Promise<void> {
     backend,
   });
 
+  // Debug handles. The demo is the only integration test that exercises the
+  // browser path end to end, and without a way to inspect it from a console a
+  // silent failure has no diagnostic at all.
+  (globalThis as Record<string, unknown>).__wslam = { slam, backend };
+
   const sync = new CameraSync(scene.camera, { holdOnLoss: true });
 
   slam.onState((state) => {
@@ -195,13 +200,27 @@ async function main(): Promise<void> {
       scene.setUncertainty(pose);
     }
 
+    // Poll the state rather than relying only on `onState`. That event fires
+    // on transitions, so a session that never leaves `initializing` leaves the
+    // label showing the page's initial "idle" and looks like nothing is
+    // running at all — which is indistinguishable from a real hang.
+    const { key, label } = describeState(slam.state);
+    stateDot.dataset.state = key;
+    stateLabel.textContent = label;
+
     const debug = slam.debug;
     scene.setLandmarks(debug.landmarks());
     scene.setTrajectory(debug.trajectory());
     scene.setKeyframes(debug.keyframes());
     scene.render();
 
-    landmarkCount.textContent = `${debug.landmarks().length / 3} landmarks`;
+    // Features vs landmarks separates the two ways this fails on a real
+    // device: no features means the image has nothing to track (too dark, too
+    // smooth, out of focus); features but no landmarks means the two-view
+    // bootstrap has not seen enough parallax yet, which needs sideways motion
+    // rather than rotation.
+    const featureCount = debug.features().length;
+    landmarkCount.textContent = `${featureCount} feat · ${debug.landmarks().length / 3} landmarks`;
     keyframeCount.textContent = `${debug.keyframes().length} keyframes`;
     renderTimings(debug.timings() as unknown as Record<string, number>);
 

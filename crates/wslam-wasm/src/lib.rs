@@ -534,6 +534,44 @@ pub fn init_logging(level: &str) {
         _ => log::LevelFilter::Info,
     };
     log::set_max_level(filter);
+    // Setting the level without installing a logger silently discards every
+    // record: `log`'s default is a no-op sink. Every warning the pipeline
+    // emits in a browser — dropped frames, unavailable adapters, rejected
+    // configurations — went nowhere, which turns any field failure into a
+    // guessing game. `set_logger` is idempotent by contract, so ignore a
+    // second call rather than treating it as an error.
+    #[cfg(target_arch = "wasm32")]
+    let _ = log::set_logger(&ConsoleLogger);
+}
+
+/// Bridges `log` records to the browser console.
+///
+/// Hand-written rather than pulling in `console_log`: it is a dozen lines, and
+/// the wasm binary is shipped to phones over a mobile connection.
+#[cfg(target_arch = "wasm32")]
+struct ConsoleLogger;
+
+#[cfg(target_arch = "wasm32")]
+impl log::Log for ConsoleLogger {
+    fn enabled(&self, metadata: &log::Metadata) -> bool {
+        metadata.level() <= log::max_level()
+    }
+
+    fn log(&self, record: &log::Record) {
+        if !self.enabled(record.metadata()) {
+            return;
+        }
+        let text = format!("[{}] {}", record.target(), record.args());
+        let js = wasm_bindgen::JsValue::from_str(&text);
+        match record.level() {
+            log::Level::Error => web_sys::console::error_1(&js),
+            log::Level::Warn => web_sys::console::warn_1(&js),
+            log::Level::Info => web_sys::console::info_1(&js),
+            _ => web_sys::console::debug_1(&js),
+        }
+    }
+
+    fn flush(&self) {}
 }
 
 /// The packed pose stride, exported so the JS side can assert agreement rather
