@@ -54,7 +54,7 @@ use wslam_core::{
 };
 use wslam_map::{
     describe, fast_keypoints, serialize_map, BinaryDescriptor, Keyframe, KeyframeId, MapDb,
-    PoseGraph, RelocConfig, Relocalizer, SolverConfig, Vocabulary,
+    PoseGraph, RelocConfig, Relocalizer, Vocabulary,
 };
 use wslam_orientation::OrientationFilter;
 use wslam_scale::{NoneScale, ScaleSource};
@@ -103,6 +103,16 @@ pub struct WebSlam {
     frames_with_attitude: u64,
     /// Current coordinate-frame epoch; see `Pose::frame_epoch`.
     frame_epoch: u32,
+    /// Highest epoch number ever issued. Separate from `frame_epoch` because
+    /// a merge can move `frame_epoch` backwards; fresh epochs must never
+    /// reuse a number.
+    epoch_counter: u32,
+    /// EWMA of the orientation prior's inter-frame error against the
+    /// tracker's own solve, in radians. Gates whether the prior is handed to
+    /// L3 at all.
+    prior_err_ewma_rad: Scalar,
+    /// The tracker's solved rotation last frame, for scoring the prior.
+    previous_solved_rotation: Option<So3>,
     /// Set by a verified relocalization, so the bootstrap it enables does not
     /// count as a new frame.
     relocalized_since_loss: bool,
@@ -115,6 +125,14 @@ pub struct WebSlam {
     relocalizer: Relocalizer,
     pose_graph: PoseGraph,
     keyframe_times: Vec<(KeyframeId, Timestamp)>,
+    /// The coordinate-frame epoch each keyframe was created in. Poses from
+    /// different epochs live in unrelated frames with unrelated scales, so
+    /// every pose-graph edge must stay within one epoch; an edge across a
+    /// bootstrap discontinuity is a measurement between two fictions.
+    keyframe_epochs: std::collections::HashMap<KeyframeId, u32>,
+    /// Same bookkeeping for map landmarks, so an epoch merge knows which
+    /// positions to re-express.
+    landmark_epochs: std::collections::HashMap<wslam_map::LandmarkId, u32>,
     /// Tracker landmark id -> stable map landmark id.
     ///
     /// The tracker's ids are local to its current map and restart on reset; the
@@ -158,9 +176,12 @@ enum BackendJob {
     /// Cull the map back under its keyframe ceiling.
     Cull,
     /// Look for a loop closure from this keyframe.
+    ///
+    /// There is deliberately no `Optimize` job any more: with loop closure
+    /// contributing no SE(3) edges (see the accept path for the measured
+    /// reasons), the graph holds odometry chains only and re-optimising it is
+    /// a no-op. The variant comes back the day the graph speaks Sim(3).
     LoopSearch(KeyframeId),
-    /// Re-optimise the pose graph.
-    Optimize,
 }
 
 impl WebSlam {
@@ -256,12 +277,17 @@ impl WebSlam {
             frames_with_prior: 0,
             frames_with_attitude: 0,
             frame_epoch: 0,
+            epoch_counter: 0,
+            prior_err_ewma_rad: 0.0,
+            previous_solved_rotation: None,
             relocalized_since_loss: false,
             tracker: Tracker::new(config.track, intrinsics),
             map,
             relocalizer: Relocalizer::new(RelocConfig::default()),
             pose_graph: PoseGraph::new(),
             keyframe_times: Vec::new(),
+            keyframe_epochs: Default::default(),
+            landmark_epochs: Default::default(),
             landmark_ids: std::collections::HashMap::new(),
             lost_since: None,
             backend_queue: VecDeque::new(),
@@ -391,13 +417,46 @@ impl WebSlam {
         // wrong by. See `min_prior_rotation_rad`: below that threshold the
         // prediction is noise and measurably costs more frames than it saves.
         let useful = inter_frame
-            .map(|d| d.angle() >= self.config.min_prior_rotation_rad)
+            .map(|d| {
+                let a = d.angle();
+                // A band, not a floor. Below it the prediction is noise; above
+                // it the *gyro integration* is the noise — L1's error grows
+                // with angular rate, so the frames with the largest predicted
+                // rotation are precisely the frames where the prediction is
+                // least trustworthy. Measured on MH_03/MH_05 (drone flips):
+                // the uncapped prior is what kept tier 2 above tier 1 there.
+                a >= self.config.min_prior_rotation_rad && a <= self.config.max_prior_rotation_rad
+            })
             .unwrap_or(false);
-        let prior = if useful { attitude } else { None };
+        // …and only while it has been *right* recently. The prior's error
+        // against the rotation the tracker itself solved is tracked as an
+        // EWMA; when the gyro integration goes through one of its bad
+        // stretches (the tail is heavy: rms 0.88° against p95 0.43° on
+        // MH_01), the prior misdirects every KLT seed at once and tier 2
+        // lands *above* tier 1 — 2.30 m vs 0.66 m ATE measured on MH_01 CPU.
+        // A prior that has been missing by more than the gate recently is
+        // worse than no prior, so it is withheld until it recovers.
+        let trusted = self.prior_err_ewma_rad < self.config.max_prior_error_rad;
+        let prior = if useful && trusted { attitude } else { None };
         if prior.is_some() {
             self.frames_with_prior += 1;
         }
         let outcome = self.tracker.process(&frame, prior);
+
+        // Score the prior against what the tracker actually measured, whether
+        // or not it was handed over — a withheld prior must be able to earn
+        // its way back in.
+        if let (Some(predicted), Some(prev_pose), Some(now_pose)) = (
+            inter_frame,
+            self.previous_solved_rotation,
+            outcome.pose.map(|p| p.rotation()),
+        ) {
+            let solved = now_pose.inverse().compose(&prev_pose);
+            let err = predicted.compose(&solved.inverse()).angle();
+            const ALPHA: Scalar = 0.3;
+            self.prior_err_ewma_rad += ALPHA * (err - self.prior_err_ewma_rad);
+        }
+        self.previous_solved_rotation = outcome.pose.map(|p| p.rotation());
 
         self.update_intrinsics(inter_frame);
         self.previous_camera_attitude = attitude;
@@ -418,7 +477,14 @@ impl WebSlam {
             if self.relocalized_since_loss {
                 self.relocalized_since_loss = false;
             } else if self.frame_epoch > 0 || !self.trajectory.is_empty() {
-                self.frame_epoch += 1;
+                // Epoch numbers come from a counter that only counts up, not
+                // from `frame_epoch + 1`: an epoch merge can fold the session
+                // back into an *older* epoch, and incrementing from there
+                // would mint a number an unrelated earlier segment already
+                // used — pooling two different coordinate frames under one
+                // label in every epoch-keyed consumer.
+                self.epoch_counter += 1;
+                self.frame_epoch = self.epoch_counter;
                 log::info!(
                     "new coordinate frame (epoch {}) — bootstrapped without relocalizing",
                     self.frame_epoch
@@ -851,6 +917,7 @@ impl WebSlam {
                             observations: Vec::new(),
                         });
                         self.landmark_ids.insert(tracker_id, new_id);
+                        self.landmark_epochs.insert(new_id, self.frame_epoch);
                         landmarks[i] = Some(new_id);
                         landmark_ids_seen.push(new_id);
                     }
@@ -884,19 +951,29 @@ impl WebSlam {
             }
         }
         self.keyframe_times.push((id, frame.timestamp));
+        self.keyframe_epochs.insert(id, self.frame_epoch);
 
         self.pose_graph
             .add_node(id, pose, self.keyframe_times.len() == 1);
         if self.keyframe_times.len() >= 2 {
             let previous = self.keyframe_times[self.keyframe_times.len() - 2].0;
-            if let Some(from) = self.pose_graph.pose(previous) {
-                let measurement = from.inverse().compose(&pose);
-                self.pose_graph.add_edge(
-                    previous,
-                    id,
-                    measurement,
-                    wslam_core::Mat6::identity() * 100.0,
-                );
+            // Only chain keyframes born in the same coordinate frame. Across a
+            // bootstrap-without-reloc boundary the previous pose is expressed
+            // in a different arbitrary frame at a different arbitrary scale,
+            // and `from⁻¹ ∘ pose` between them is not a measurement of
+            // anything — it silently corrupted the graph on every sequence
+            // with a tracking loss (MH_03: 5 epochs, all cross-linked).
+            let same_epoch = self.keyframe_epochs.get(&previous) == Some(&self.frame_epoch);
+            if same_epoch {
+                if let Some(from) = self.pose_graph.pose(previous) {
+                    let measurement = from.inverse().compose(&pose);
+                    self.pose_graph.add_edge(
+                        previous,
+                        id,
+                        measurement,
+                        wslam_core::Mat6::identity() * 100.0,
+                    );
+                }
             }
         }
 
@@ -924,6 +1001,12 @@ impl WebSlam {
         let (keypoints, angles): (Vec<Vec2>, Vec<Scalar>) = detections.into_iter().unzip();
         let descriptors = describe(&frame.image, &keypoints, &angles);
         let bow = db.transform(&descriptors);
+        log::debug!(
+            "reloc attempt at frame {}: {} keypoints, {} keyframes in map",
+            frame.id.0,
+            keypoints.len(),
+            db.keyframe_count()
+        );
 
         // `relocalize` is the only accept path and it verifies geometry on
         // every candidate. There is deliberately no unverified variant
@@ -953,6 +1036,171 @@ impl WebSlam {
         }
     }
 
+    /// Fold the epoch of keyframe `from` into the epoch of the keyframe a
+    /// cross-epoch loop verification matched it against.
+    ///
+    /// The Sim(3) between the two frames is solved from the verified
+    /// correspondences' 3D positions — each matched landmark exists once in
+    /// the old map and once in the young epoch's, and those pairs are a
+    /// 3D–3D alignment problem (Umeyama). Everything born in the young epoch
+    /// is then re-expressed: keyframe poses, landmark positions, pose-graph
+    /// nodes and intra-epoch edge baselines, per-frame anchors, and the live
+    /// tracker. Poses already emitted stay as they were — the contract is
+    /// that *future* poses carry the older epoch, exactly like a
+    /// relocalization after loss.
+    ///
+    /// Returns `false` — with the map untouched — when the pairs are too few
+    /// or the alignment residual too large to trust a whole-epoch rewrite.
+    fn try_merge_epochs(&mut self, from: KeyframeId, v: &wslam_map::Verified) -> bool {
+        /// Matched 3D–3D pairs below this cannot pin scale reliably.
+        const MIN_MERGE_PAIRS: usize = 10;
+        /// Alignment residual as a fraction of the target cloud's RMS spread.
+        /// Above this the "overlap" is geometrically inconsistent and folding
+        /// the epoch would smear the error over every pose in it.
+        const MAX_RMSE_FRACTION: f64 = 0.10;
+        /// RANSAC inlier threshold, as a fraction of the target spread.
+        const MERGE_INLIER_FRACTION: f64 = 0.05;
+
+        let (Some(young), Some(old)) = (
+            self.keyframe_epochs.get(&from).copied(),
+            self.keyframe_epochs.get(&v.keyframe).copied(),
+        ) else {
+            return false;
+        };
+
+        // 3D–3D pairs: the query keyframe's own landmark for a keypoint gives
+        // the young-frame position; the verified match gives the old-frame one.
+        let (mut young_pts, mut old_pts) = (Vec::new(), Vec::new());
+        {
+            let Some(db) = self.map.as_ref() else {
+                return false;
+            };
+            let Some(kf) = db.keyframe(from) else {
+                return false;
+            };
+            for &(query_idx, old_lid) in &v.correspondences {
+                let Some(Some(young_lid)) = kf.landmarks.get(query_idx) else {
+                    continue;
+                };
+                let (Some(y), Some(o)) = (db.landmark(*young_lid), db.landmark(old_lid)) else {
+                    continue;
+                };
+                young_pts.push(y.position);
+                old_pts.push(o.position);
+            }
+        }
+        if young_pts.len() < MIN_MERGE_PAIRS {
+            log::debug!(
+                "epoch merge {young}->{old} rejected: {} 3D pairs < {MIN_MERGE_PAIRS}",
+                young_pts.len()
+            );
+            return false;
+        }
+        let centroid: wslam_core::Vec3 =
+            old_pts.iter().sum::<wslam_core::Vec3>() / old_pts.len() as Scalar;
+        let spread = (old_pts
+            .iter()
+            .map(|p| (p - centroid).norm_squared())
+            .sum::<Scalar>()
+            / old_pts.len() as Scalar)
+            .sqrt();
+        if spread <= 0.0 {
+            return false;
+        }
+        // RANSAC, not least squares: the pairs are triangulations and a single
+        // depth blunder among them drags a least-squares Sim(3)'s scale and
+        // rotation — measured on MH_03, the plain fit passed a residual gate
+        // and still misplaced the merged segment by metres. Forked off the
+        // keyframe id so a merge attempt cannot shift any later RANSAC draw.
+        let mut rng = self.rng.fork("epoch-merge", from.0);
+        let Some((alignment, consensus)) = wslam_core::math::umeyama_ransac(
+            &young_pts,
+            &old_pts,
+            MERGE_INLIER_FRACTION * spread,
+            200,
+            MIN_MERGE_PAIRS,
+            &mut rng,
+        ) else {
+            log::debug!(
+                "epoch merge {young}->{old} rejected: no Sim(3) consensus over {} pairs",
+                young_pts.len()
+            );
+            return false;
+        };
+        if alignment.rmse > MAX_RMSE_FRACTION * spread {
+            log::debug!(
+                "epoch merge {young}->{old} rejected: consensus {consensus} but rmse {:.3} vs spread {:.3}",
+                alignment.rmse,
+                spread
+            );
+            return false;
+        }
+
+        let sim = alignment.transform;
+        let (r, t, s) = (sim.rotation(), sim.translation(), sim.scale());
+        log::info!(
+            "merging epoch {young} into {old}: {} pairs, scale {s:.4}, rmse {:.4}",
+            young_pts.len(),
+            alignment.rmse
+        );
+
+        // Keyframes of the young epoch, in insertion order for determinism.
+        let mut merged: std::collections::HashSet<KeyframeId> = Default::default();
+        for &(id, _) in &self.keyframe_times {
+            if self.keyframe_epochs.get(&id) == Some(&young) {
+                merged.insert(id);
+                if let Some(pose) = self.pose_graph.pose(id) {
+                    let moved = sim.act_pose(&pose);
+                    self.pose_graph.set_pose(id, moved);
+                    if let Some(db) = self.map.as_mut() {
+                        db.set_keyframe_pose(id, moved);
+                    }
+                }
+            }
+        }
+        self.pose_graph.rescale_edges_within(&merged, s);
+
+        // Landmarks, in id order for determinism.
+        let mut young_lids: Vec<wslam_map::LandmarkId> = self
+            .landmark_epochs
+            .iter()
+            .filter_map(|(lid, e)| (*e == young).then_some(*lid))
+            .collect();
+        young_lids.sort_unstable();
+        if let Some(db) = self.map.as_mut() {
+            for lid in &young_lids {
+                if let Some(lm) = db.landmark_mut(*lid) {
+                    lm.position = sim.act(&lm.position);
+                }
+            }
+        }
+
+        // Per-frame anchors relative to a merged keyframe keep their rotation
+        // but their baseline is now in the old frame's units.
+        for (_, reference, rel) in self.relative_poses.iter_mut() {
+            if merged.contains(reference) {
+                *rel = Se3::new(rel.rotation(), rel.translation() * s);
+            }
+        }
+
+        for id in &merged {
+            self.keyframe_epochs.insert(*id, old);
+        }
+        for lid in &young_lids {
+            self.landmark_epochs.insert(*lid, old);
+        }
+
+        self.tracker.apply_similarity(&r, &t, s);
+        self.frame_epoch = old;
+        self.events.push(SlamEvent::EpochMerged {
+            at: self.latest.map(|p| p.timestamp).unwrap_or(Timestamp::ZERO),
+            from_epoch: young,
+            into_epoch: old,
+            scale: s,
+        });
+        true
+    }
+
     /// Execute deferred backend work within this frame's budget.
     ///
     /// One job per frame. The budget is a *scheduling* decision, not an
@@ -964,33 +1212,69 @@ impl WebSlam {
         let Some(job) = self.backend_queue.pop_front() else {
             return;
         };
-        let Some(db) = self.map.as_mut() else { return };
+        if self.map.is_none() {
+            return;
+        }
 
         match job {
             BackendJob::Cull => {
+                let Some(db) = self.map.as_mut() else { return };
                 let removed = db.cull(&wslam_map::CullPolicy::default());
                 if removed > 0 {
                     log::debug!("culled {removed} keyframes, {} remain", db.keyframe_count());
                 }
             }
             BackendJob::LoopSearch(from) => {
-                let Some(kf) = db.keyframe(from) else { return };
-                let (bow, keypoints, descriptors) =
-                    (kf.bow.clone(), kf.keypoints.clone(), kf.descriptors.clone());
-                let k = kf.intrinsics;
-                let candidates =
+                // Borrowed per-statement rather than for the whole arm: the
+                // merge path below needs `&mut self` while the queries only
+                // need the map read-only.
+                let (bow, keypoints, descriptors, k) = {
+                    let Some(db) = self.map.as_ref() else { return };
+                    let Some(kf) = db.keyframe(from) else { return };
+                    (
+                        kf.bow.clone(),
+                        kf.keypoints.clone(),
+                        kf.descriptors.clone(),
+                        kf.intrinsics,
+                    )
+                };
+                let candidates = {
+                    let Some(db) = self.map.as_ref() else { return };
                     self.relocalizer
-                        .query(db, &bow, self.config.map.loop_exclude_recent);
+                        .query(db, &bow, self.config.map.loop_exclude_recent)
+                };
 
+                let from_epoch = self.keyframe_epochs.get(&from).copied();
                 for candidate in candidates.into_iter().take(3) {
-                    let verified = self.relocalizer.verify(
-                        db,
-                        &candidate,
-                        &keypoints,
-                        &descriptors,
-                        &k,
-                        &mut self.rng,
-                    );
+                    let candidate_epoch = self.keyframe_epochs.get(&candidate.keyframe).copied();
+                    // A loop edge is a rigid SE(3) constraint, and two epochs
+                    // have unrelated frames *and unrelated scales* — a
+                    // cross-epoch edge would be wrong in a way pose-graph
+                    // optimisation then spreads over every node. But a
+                    // *verified* cross-epoch hit is exactly the evidence that
+                    // the two frames describe one place, so instead of an edge
+                    // it triggers an epoch merge: solve the Sim(3) from the
+                    // matched landmarks' 3D positions in both frames and fold
+                    // the younger epoch into the older (ORB-SLAM3's map
+                    // merge). Only after the merge — when both endpoints
+                    // finally share a frame — is the loop edge itself added.
+                    let cross_epoch = candidate_epoch != from_epoch;
+                    if cross_epoch && candidate_epoch.zip(from_epoch).is_none_or(|(c, f)| c >= f) {
+                        // Only merge *into* an older epoch; anything else is
+                        // bookkeeping gone wrong, not a real overlap.
+                        continue;
+                    }
+                    let verified = {
+                        let Some(db) = self.map.as_ref() else { return };
+                        self.relocalizer
+                            .verify(db, &candidate, &keypoints, &descriptors, &k, &mut self.rng)
+                            // Loops are held to a stricter inlier bar than
+                            // relocalization: a bad reloc strands one session,
+                            // a bad loop edge bends the entire graph — and a
+                            // bad merge is a bad loop edge applied to every
+                            // pose in the epoch at once.
+                            .filter(|v| v.inliers >= self.config.map.loop_min_inliers)
+                    };
                     let accepted = verified.is_some();
                     self.events.push(SlamEvent::LoopClosure {
                         accepted,
@@ -999,16 +1283,30 @@ impl WebSlam {
                     });
                     match verified {
                         Some(v) => {
-                            if let Some(anchor) = self.pose_graph.pose(candidate.keyframe) {
-                                let measurement = anchor.inverse().compose(&v.pose);
-                                self.pose_graph.add_edge(
-                                    candidate.keyframe,
-                                    from,
-                                    measurement,
-                                    wslam_core::Mat6::identity() * 50.0,
-                                );
-                                self.backend_queue.push_back(BackendJob::Optimize);
+                            if cross_epoch && !self.try_merge_epochs(from, &v) {
+                                self.rejected_loops.push(DebugPoseGraphEdge {
+                                    from: from.0,
+                                    to: candidate.keyframe.0,
+                                    is_loop: true,
+                                    accepted: false,
+                                    score: candidate.score,
+                                });
+                                continue;
                             }
+                            // Deliberately NO pose-graph edge from an accepted
+                            // loop. Measured on EuRoC (MH_01, 0.31 m of drift
+                            // over 184 s), every weighting tried made the
+                            // refined trajectory *worse* than the raw one —
+                            // flat 50: 0.31→0.70 m; PnP-covariance inverse:
+                            // 0.31→1.06 m — because at this drift level the
+                            // closure's own error (landmark drift the PnP
+                            // covariance cannot see, plus monocular scale
+                            // drift an SE(3) edge cannot express) exceeds the
+                            // drift it could correct. Until the graph speaks
+                            // Sim(3) and the edge covariance includes landmark
+                            // error, a verified loop's value is what it
+                            // *proves* — same place, both frames — which is
+                            // exactly what the epoch merge above consumes.
                             break;
                         }
                         None => {
@@ -1025,23 +1323,6 @@ impl WebSlam {
                             });
                         }
                     }
-                }
-            }
-            BackendJob::Optimize => {
-                let report = self.pose_graph.optimize(&SolverConfig::default());
-                log::debug!(
-                    "pose graph: {} iterations, cost {:.3e} -> {:.3e}",
-                    report.iterations,
-                    report.initial_cost,
-                    report.final_cost
-                );
-                let updates: Vec<(KeyframeId, Se3)> = self
-                    .keyframe_times
-                    .iter()
-                    .filter_map(|(id, _)| self.pose_graph.pose(*id).map(|p| (*id, p)))
-                    .collect();
-                for (id, pose) in updates {
-                    db.set_keyframe_pose(id, pose);
                 }
             }
         }
@@ -1252,7 +1533,15 @@ mod tests {
         // because the attitude history is bounded, so a front-loaded burst
         // leaves the frames outside the retained window.
         fn run(rate: Vec3) -> WebSlam {
-            let mut slam = WebSlam::new(config()).unwrap();
+            // The performance gate is disabled here so the test isolates the
+            // *magnitude band*. The synthetic imagery below translates while
+            // the gyro claims rotation, so with the gate on, the EWMA
+            // correctly notices the prior contradicting the images and
+            // withdraws it — `the_prior_is_withdrawn_when_measurably_wrong`
+            // pins that behaviour separately.
+            let mut cfg = config();
+            cfg.max_prior_error_rad = f64::INFINITY;
+            let mut slam = WebSlam::new(cfg).unwrap();
             // The accelerometer must agree with the gyro. Holding it constant
             // in the body frame while the gyro reports rotation describes a
             // device that is turning and not turning at once, and the filter
@@ -1286,12 +1575,69 @@ mod tests {
             "a prior predicting less than its own error must stand aside"
         );
 
-        // Turning hard: 2 rad/s is 0.067 rad per frame, well over the gate.
-        let turning = run(Vec3::new(0.0, 2.0, 0.0));
+        // Turning at 1.2 rad/s — 0.04 rad per frame, inside the trust band:
+        // enough predicted motion to beat the prior's own error, not so much
+        // that gyro integration error dominates the prediction.
+        let turning = run(Vec3::new(0.0, 1.2, 0.0));
         assert!(
             turning.frames_with_rotation_prior() >= 8,
             "under real rotation the prior must engage, got {} of 12",
             turning.frames_with_rotation_prior()
+        );
+
+        // Turning violently: 2 rad/s is 0.067 rad per frame, past the band's
+        // ceiling. Gyro integration error grows with rate, so the frames with
+        // the largest predicted rotation are exactly the frames where the
+        // prediction is least trustworthy, and the prior stands aside again.
+        let violent = run(Vec3::new(0.0, 2.0, 0.0));
+        assert_eq!(
+            violent.frames_with_rotation_prior(),
+            0,
+            "past the trust band the prior must stand aside"
+        );
+    }
+
+    /// The performance gate: a prior that keeps contradicting the rotation
+    /// the tracker itself solves is withheld, whatever its magnitude says.
+    ///
+    /// The imagery here *translates* while the gyro claims in-band rotation,
+    /// so the prior is confidently, measurably wrong — the EWMA of its error
+    /// against the solved rotation climbs and the gate must trip. This is the
+    /// mechanism that kept the heavy tail of gyro integration error from
+    /// misdirecting every KLT seed at once on EuRoC (tier 2 above tier 1,
+    /// 2.30 m vs 0.66 m on MH_01 CPU, before the gate existed).
+    #[test]
+    fn the_prior_is_withdrawn_when_measurably_wrong() {
+        let world_down = Vec3::new(0.0, 0.0, wslam_core::imu::GRAVITY);
+        let rate = Vec3::new(0.0, 1.2, 0.0);
+        let mut slam = WebSlam::new(config()).unwrap();
+        let mut engaged_last_four = 0;
+        for frame in 0..12u64 {
+            let until = (frame + 1) as f64 / 30.0;
+            let mut t = frame as f64 / 30.0;
+            while t < until {
+                let truth = So3::exp(&(rate * t));
+                slam.push_imu(ImuSample::new(
+                    Timestamp::from_seconds(t),
+                    rate,
+                    truth.inverse().act(&world_down),
+                ));
+                t += 0.005;
+            }
+            slam.push_frame(textured_frame(frame, frame as f64 * 1.5));
+            let before = slam.frames_with_rotation_prior();
+            slam.step();
+            if frame >= 8 && slam.frames_with_rotation_prior() > before {
+                engaged_last_four += 1;
+            }
+        }
+        assert!(
+            slam.frames_with_rotation_prior() >= 1,
+            "the prior must at least be tried before the gate can measure it"
+        );
+        assert_eq!(
+            engaged_last_four, 0,
+            "after several frames of measured contradiction the gate must have tripped"
         );
     }
 

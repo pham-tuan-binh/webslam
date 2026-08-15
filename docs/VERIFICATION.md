@@ -20,7 +20,7 @@ numbers can be trusted:
 | Jacobians throughout | **measured** against central finite differences |
 | L2 focal error + both required ablations | **measured** on a synthetic rotating rig with known focal |
 | L1 angle error, gravity convergence, yaw drift | **measured** synthetically; needs the turntable for a device number |
-| L3 ATE | **measured, and it fails.** 3.57 m RMSE on EuRoC MH_01_easy against ~0.05 m published. ~30% of frames produce no pose. See "First real-data result" below. |
+| L3 ATE | **measured: 0.309 m RMSE on EuRoC MH_01_easy at 100% coverage** (GPU front-end), against a 0.016–0.100 m published band. Above spec by 3–20×, down from the 3.57 m first measurement. See "First real-data result" below. |
 | L4 relocalization + false-positive rate | **measured** synthetically; needs 7-Scenes for a public number |
 | **L5 scale error %** | **synthetic only.** No metric truth source — see `rigs/README.md` |
 | **L6 NEES / coverage on real data** | **synthetic only**, same reason |
@@ -35,7 +35,56 @@ tested; what is missing is a metric truth source to point it at.
 
 Run on EuRoC `MH_01_easy` (3682 frames, 184 s, published calibration, x86_64).
 
-### Where it stands after twelve fixes
+### Where it stands now (GPU front-end, trained vocabulary)
+
+```
+MH_01_easy   0.1% no pose   ATE 0.309 m at 100% coverage, one coordinate frame
+MH_02_easy   1.3% no pose   ATE 0.300 m largest segment (74% cov), 0.301 m whole
+MH_05_diff   8.1% no pose   ATE 0.742 m largest segment (88% cov)
+V1_01_easy   7.2% no pose   ATE 0.067 m largest segment
+```
+
+What moved it since the numbers below were recorded, in causal order of
+discovery: the GPU image front-end is not only ~15× faster than the CPU
+reference (1.3 ms vs 20.6 ms median) but *more accurate*, because its
+forward-backward gate at f32 tolerances rejects the marginal tracks the CPU
+path kept; relocalization fires now (the matcher was starving verification
+one or two correspondences short of `min_inliers` on every real attempt —
+fixed with covisibility-expanded matching and a projection-guided second
+pass, ORB-SLAM's design); a verified cross-epoch loop hit triggers a Sim(3)
+epoch merge (RANSAC-robust Umeyama over matched landmark pairs, ORB-SLAM3's
+map merge) so a post-loss segment can be folded back into the frame it
+overlaps; and the orientation prior is gated and per-frame arbitrated — see
+"The tier-2 prior was hurting" below.
+
+### Loop closure verifies, and deliberately adds no pose-graph edges
+
+Measured on MH_01 (0.31 m of drift): a flat-weight loop edge degraded the
+refined trajectory to 0.70 m, and weighting by the inverse PnP covariance
+degraded it to 1.06 m — the covariance cannot see landmark drift, so it is
+overconfident exactly when the edge is worst. At this drift level the
+closure's own error exceeds the drift it could correct, and monocular scale
+drift cannot be expressed by an SE(3) edge at all. The edges return when the
+graph speaks Sim(3) and the edge covariance includes landmark error; until
+then a verified loop's value is what it proves, which is what the epoch
+merge consumes.
+
+### The tier-2 prior was hurting
+
+The prior models pure rotation, and its error grows with angular rate — so
+ungated, it engaged exactly where it was least trustworthy, and tier 2 sat
+*above* tier 1 on every sequence (MH_01 CPU: 2.30 m vs 0.66 m). Three gates
+fixed the ordering: a magnitude band (not a floor — past ~0.05 rad/frame the
+gyro integration is the noise), an EWMA of the prior's error against the
+tracker's own solved rotation, and per-frame empirical arbitration in the
+tracker (trial-track a 24-feature spread with and without the prior; the
+winner takes the frame — no threshold can distinguish rotation-in-place,
+where the prior is exact, from fast translation, where its missing parallax
+misdirects every seed). With the gates, MH_01 CPU tier 2 is 0.38 m against
+tier 1's 0.66 m, and tier 2's drift *rate* (RPE) is at or below tier 1's on
+the fast sequences.
+
+### The numbers this section used to headline
 
 ```
 tier 1   15.9% no pose   ATE 3.185 m over the largest of 2 segments (95.6% coverage)
@@ -53,14 +102,17 @@ aligned, our comparison class):
 | ORB-SLAM mono | 0.071 |
 | SVO mono | 0.100 |
 
-So the band is **0.016–0.100 m** and we are at **~3 m**: still one to two orders
-of magnitude short. Vision-only buys no accuracy excuse here — the ORB-SLAM3
-authors note that monocular's apparent edge over stereo is a 7-DoF-vs-6-DoF
-alignment artefact, not a real one. What vision-only actually costs is
-robustness.
+So the band is **0.016–0.100 m** and we are at **0.31 m** on the same
+sequence: a factor of 3–20 rather than the two orders of magnitude above.
+Vision-only buys no accuracy excuse here — the ORB-SLAM3 authors note that
+monocular's apparent edge over stereo is a 7-DoF-vs-6-DoF alignment artefact,
+not a real one. What vision-only actually costs is robustness.
 
-**Frame loss is much improved** — 29.6% → 9.9% at tier 2 — and tier 2 now beats
-tier 1, which is the ordering the architecture assumes.
+The remaining gap is within-segment drift, and the measured evidence says it
+will not come from parameter tuning: every BA knob combination that improved
+MH_01 (`--ba-iters 8 --ba-window 20` reached 0.23 m there) regressed the
+fragmented sequences, which is noise-fitting, not progress. The honest next
+step is structural — a Sim(3)-aware backend over a covisibility graph.
 
 ### What the segmentation result ruled out
 
@@ -75,19 +127,26 @@ splice was real, it was worth fixing, and fixing it did not move the number.
 
 ### Ranked remaining work
 
-1. **Accuracy within a segment.** ~3 m of drift over 184 s against a 0.016–0.100 m
-   band. Nothing in the harness is lying about it any more, so it is now
-   directly attackable. The reference systems' answer is windowed local bundle
-   adjustment over a covisibility graph plus loop closure with a Sim(3) pose
-   graph; we have motion-only BA and no local BA at all.
-2. **Relocalization still never fires.** Not the empty vocabulary, as first
-   assumed — `add_keyframe` stores `landmarks: vec![None; n]`, so the
-   verification PnP has no 3D points to work with. Populate keyframe landmarks
-   from the tracker's local map first; the vocabulary is the second-order
-   problem.
-3. **Keyframe policy.** 470 keyframes over 3682 frames. ORB-SLAM2 gates on
-   `mnMatchesInliers < 0.9 * nRefMatches` with a 20-frame floor at 20 fps; ours
-   is a fixed 3-frame floor plus an absolute starvation trigger.
+1. **A Sim(3)-aware backend.** The single change that unlocks the rest:
+   loop-closure edges (measured harmful as SE(3) — see above), pose-graph
+   annealing after an epoch merge, and scale-consistent within-segment
+   correction all want the same machinery. Local BA over a covisibility
+   graph rather than a temporal window rides along with it.
+2. **Frame loss on the fast sequences.** 6–8% no-pose on MH_03/MH_05/V1_01 is
+   what fragments those trajectories in the first place; every loss either
+   costs coverage or spends a merge to undo. The losses cluster at motion the
+   pyramid cannot absorb — either a coarser level, or a translational prior
+   the current rotation-only prediction cannot supply.
+3. **Reloc-seeded scale.** A relocalization seeds the pose but the
+   re-bootstrap still triangulates a fresh arbitrary scale, so a recovered
+   session is frame-continuous but not scale-continuous until the next merge.
+   Triangulating the re-bootstrap against the map's landmarks would fix both
+   at once.
+
+Items formerly here, done: relocalization fires (the blocker was the
+matcher's starved seed stage, not — as first assumed twice over — the
+vocabulary or the landmark slots); the keyframe policy gates on the
+tracked-ratio against the reference keyframe with a 10-frame floor.
 
 ### The measurement was wrong in two ways, both now fixed
 

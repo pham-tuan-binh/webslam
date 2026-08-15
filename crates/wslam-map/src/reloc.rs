@@ -30,7 +30,7 @@
 
 use crate::db::MapDb;
 use crate::descriptor::{nearest_two, BinaryDescriptor};
-use crate::keyframe::KeyframeId;
+use crate::keyframe::{KeyframeId, LandmarkId};
 use crate::vocabulary::BowVector;
 use wslam_core::covariance::{enforce_psd, symmetrize};
 use wslam_core::math::{hat, umeyama};
@@ -46,6 +46,26 @@ pub const MAX_MATCH_HAMMING: u32 = 64;
 /// runner-up is nearly as close is ambiguous and worth less than nothing to
 /// RANSAC.
 pub const MATCH_RATIO: f64 = 0.8;
+
+/// Covisibility neighbours whose landmarks join the candidate's matching pool
+/// during verification. ORB-SLAM expands relocalization matching the same way;
+/// past ~5 neighbours the added landmarks stop being visible from the query
+/// pose and only dilute the ratio test.
+const MAX_COVIS_NEIGHBOURS: usize = 5;
+
+/// A neighbour must share at least this many landmarks with the candidate to
+/// contribute its own. Below this the "neighbour" is likely a place-recognition
+/// alias rather than an adjacent view, and its landmarks are noise.
+const MIN_SHARED_LANDMARKS: usize = 8;
+
+/// Ratio-tested matches needed before RANSAC runs at all. P3P needs 4; below
+/// this the pose is too often a fluke worth rejecting before the guided pass.
+const MIN_SEED_MATCHES: usize = 8;
+
+/// Search window around a landmark's predicted pixel in the guided second
+/// pass. Wide enough to absorb the coarse pose's reprojection error, narrow
+/// enough that the window itself does the disambiguation a ratio test would.
+const GUIDED_RADIUS_PX: f64 = 12.0;
 
 /// DBoW2 keeps only keyframes sharing at least this fraction of the maximum
 /// observed common-word count. It cuts the candidate list by an order of
@@ -105,7 +125,7 @@ pub struct Candidate {
 /// `#[non_exhaustive]`: only this module can construct one, and it only does so
 /// after PnP RANSAC has met [`RelocConfig::min_inliers`]. That is the structural
 /// half of spec.md §5's "geometric verification ... is non-negotiable".
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, PartialEq)]
 #[non_exhaustive]
 pub struct Verified {
     /// The keyframe the query was matched to.
@@ -118,6 +138,11 @@ pub struct Verified {
     /// 6x6 pose covariance, `[translation; rotation]`, right-perturbation, in
     /// the body frame — the same convention as everything else in the workspace.
     pub covariance: Mat6,
+    /// The surviving 2D–3D correspondences: `(query keypoint index, map
+    /// landmark)`. What a caller needs to relate the query's *own* geometry to
+    /// the map's — the 3D–3D pairs behind a Sim(3) epoch merge — without
+    /// re-running the matcher.
+    pub correspondences: Vec<(usize, LandmarkId)>,
 }
 
 /// Why a candidate failed geometric verification.
@@ -325,16 +350,60 @@ impl Relocalizer {
             .ok_or(Rejection::UnknownKeyframe)?;
 
         // Only features already triangulated into a landmark can constrain a
-        // pose, so match against that subset.
-        let mut map_descriptors = Vec::new();
-        let mut map_points = Vec::new();
-        for (i, slot) in kf.landmarks.iter().enumerate() {
-            let Some(id) = slot else { continue };
-            let (Some(d), Some(lm)) = (kf.descriptors.get(i), db.landmark(*id)) else {
+        // pose, so match against that subset — but not the candidate's subset
+        // alone. A single keyframe carries only the landmarks its own detector
+        // happened to re-find, and matching against just those starved PnP one
+        // or two correspondences short of `min_inliers` on real sequences
+        // (measured on EuRoC MH_03: rejections clustered at 19 matches against
+        // a required 20). The candidate's covisibility neighbourhood sees the
+        // same place from adjacent poses, so its landmarks are legitimate
+        // correspondences for the query too — the same expansion ORB-SLAM's
+        // relocalization performs. Pool them, deduplicated by landmark id.
+        let mut pool_ids: Vec<LandmarkId> = kf.landmarks.iter().flatten().copied().collect();
+        if pool_ids.len() < 4 {
+            return Err(Rejection::NoMappedLandmarks {
+                landmarks: pool_ids.len(),
+            });
+        }
+        // Neighbours ranked by how many landmarks they share with the
+        // candidate. BTreeMap keeps the ranking deterministic on ties.
+        let mut shared: std::collections::BTreeMap<KeyframeId, usize> = Default::default();
+        for lid in &pool_ids {
+            let Some(lm) = db.landmark(*lid) else {
                 continue;
             };
-            map_descriptors.push(*d);
+            for &obs in &lm.observations {
+                if obs != candidate.keyframe {
+                    *shared.entry(obs).or_insert(0) += 1;
+                }
+            }
+        }
+        let mut neighbours: Vec<(KeyframeId, usize)> = shared.into_iter().collect();
+        neighbours.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(&b.0)));
+        for (nid, count) in neighbours.into_iter().take(MAX_COVIS_NEIGHBOURS) {
+            if count < MIN_SHARED_LANDMARKS {
+                break;
+            }
+            let Some(nkf) = db.keyframe(nid) else {
+                continue;
+            };
+            pool_ids.extend(nkf.landmarks.iter().flatten().copied());
+        }
+        pool_ids.sort_unstable();
+        pool_ids.dedup();
+
+        // Each landmark contributes its canonical descriptor and 3D position.
+        // `pool_lids` stays parallel so an inlier index maps back to its id.
+        let mut map_descriptors = Vec::new();
+        let mut map_points = Vec::new();
+        let mut pool_lids = Vec::new();
+        for lid in &pool_ids {
+            let Some(lm) = db.landmark(*lid) else {
+                continue;
+            };
+            map_descriptors.push(lm.descriptor);
             map_points.push(lm.position);
+            pool_lids.push(*lid);
         }
         if map_descriptors.len() < 4 {
             return Err(Rejection::NoMappedLandmarks {
@@ -366,17 +435,25 @@ impl Relocalizer {
 
         let mut world = Vec::new();
         let mut pixels = Vec::new();
+        let mut pairs = Vec::new();
         for (mi, c) in claim.iter().enumerate() {
             if let Some((qi, _)) = c {
                 world.push(map_points[mi]);
                 pixels.push(keypoints[*qi]);
+                pairs.push((*qi, pool_lids[mi]));
             }
         }
-        let required = self.config.min_inliers.max(4);
-        if world.len() < required {
+        // RANSAC needs a seed set, not the full quota. `min_inliers` is the
+        // *final* gate, applied to reprojection inliers after the guided
+        // second pass below; demanding it of the ratio-tested seed matches as
+        // well starved verification one or two matches short on real
+        // sequences (EuRoC MH_03: rejections clustered at 19 of 20) and reloc
+        // never fired at all. P3P needs 4; below ~8 the RANSAC pose is too
+        // often a fluke worth rejecting cheaply here.
+        if world.len() < MIN_SEED_MATCHES {
             let reason = Rejection::TooFewMatches {
                 matches: world.len(),
-                required,
+                required: MIN_SEED_MATCHES,
             };
             log::debug!("reloc rejected {}: {reason}", candidate.keyframe);
             return Err(reason);
@@ -394,11 +471,90 @@ impl Relocalizer {
             matches: world.len(),
         })?;
 
-        let inlier_idx: Vec<usize> = mask
+        let mut inlier_idx: Vec<usize> = mask
             .iter()
             .enumerate()
             .filter_map(|(i, &ok)| ok.then_some(i))
             .collect();
+        // A RANSAC pose supported by almost nothing is not worth a guided pass.
+        if inlier_idx.len() < 4 {
+            let reason = Rejection::TooFewInliers {
+                matches: world.len(),
+                inliers: inlier_idx.len(),
+                required: self.config.min_inliers,
+            };
+            log::debug!(
+                "reloc rejected {}: {reason} (bow {:.3})",
+                candidate.keyframe,
+                candidate.score
+            );
+            return Err(reason);
+        }
+
+        // Projection-guided second pass — ORB-SLAM's SearchByProjection. The
+        // coarse pose says where each pooled landmark *should* appear in the
+        // query image; a query keypoint near that prediction with a compatible
+        // descriptor is a correspondence the appearance-only stage missed. No
+        // ratio test here: the spatial window already disambiguates, and the
+        // ratio test is exactly what starved the seed stage once the pool
+        // contained many near-duplicate views of the same scene.
+        {
+            let inv = pose.inverse();
+            let mut claimed_query: Vec<bool> = vec![false; keypoints.len()];
+            for &(qi, _) in claim.iter().flatten() {
+                claimed_query[qi] = true;
+            }
+            for (mi, slot) in claim.iter_mut().enumerate() {
+                if slot.is_some() {
+                    continue;
+                }
+                let Some(predicted) = k.project(&inv.act(&map_points[mi])) else {
+                    continue;
+                };
+                let r2 = GUIDED_RADIUS_PX * GUIDED_RADIUS_PX;
+                let mut best: Option<(usize, u32)> = None;
+                for (qi, kp) in keypoints.iter().enumerate() {
+                    if claimed_query[qi] || (kp - predicted).norm_squared() > r2 {
+                        continue;
+                    }
+                    let d = descriptors[qi].hamming(&map_descriptors[mi]);
+                    if d <= MAX_MATCH_HAMMING && best.is_none_or(|(_, b)| d < b) {
+                        best = Some((qi, d));
+                    }
+                }
+                if let Some((qi, d)) = best {
+                    claimed_query[qi] = true;
+                    *slot = Some((qi, d));
+                }
+            }
+
+            world.clear();
+            pixels.clear();
+            pairs.clear();
+            for (mi, c) in claim.iter().enumerate() {
+                if let Some((qi, _)) = c {
+                    world.push(map_points[mi]);
+                    pixels.push(keypoints[*qi]);
+                    pairs.push((*qi, pool_lids[mi]));
+                }
+            }
+            let mut guided_mask = vec![false; world.len()];
+            let guided = count_inliers(
+                &pose,
+                &world,
+                &pixels,
+                k,
+                self.config.ransac_threshold_px,
+                &mut guided_mask,
+            );
+            inlier_idx = guided_mask
+                .iter()
+                .enumerate()
+                .filter_map(|(i, &ok)| ok.then_some(i))
+                .collect();
+            debug_assert_eq!(guided, inlier_idx.len());
+        }
+
         if inlier_idx.len() < self.config.min_inliers {
             let reason = Rejection::TooFewInliers {
                 matches: world.len(),
@@ -448,6 +604,11 @@ impl Relocalizer {
             pose: refined.pose,
             inliers: final_inliers,
             covariance: refined.covariance,
+            correspondences: final_mask
+                .iter()
+                .enumerate()
+                .filter_map(|(i, &ok)| ok.then_some(pairs[i]))
+                .collect(),
         })
     }
 
@@ -1483,19 +1644,27 @@ mod tests {
         );
 
         // No query features at all: rejected by the matcher, and the reason
-        // says so rather than implying the geometry looked at it.
+        // says so rather than implying the geometry looked at it. The bar at
+        // this stage is the RANSAC seed minimum, not `min_inliers` — the full
+        // quota is only demanded of reprojection inliers after the guided
+        // second pass, because demanding it of ratio-tested seed matches is
+        // what starved verification on real sequences (EuRoC MH_03:
+        // rejections clustered at 19 matches of 20 required, reloc never
+        // fired).
         let empty = run(&reloc, &db, at(KeyframeId(3)), &[], &[], &mut rng);
         assert_eq!(
             empty,
             Err(Rejection::TooFewMatches {
                 matches: 0,
-                required: RelocConfig::default().min_inliers
+                required: MIN_SEED_MATCHES
             })
         );
         assert!(!empty.unwrap_err().reached_geometry());
 
-        // Raising the bar above the available evidence is also an appearance
-        // rejection: there are not even that many correspondences to test.
+        // An unreachable `min_inliers` now rejects at the *geometry* stage:
+        // the seed matches exist and PnP runs, and the final inlier count is
+        // what falls short. The count reported is the post-guided-pass one, so
+        // it must be at least the seed matches that RANSAC agreed on.
         let strict = Relocalizer::new(RelocConfig {
             min_inliers: 100_000,
             ..RelocConfig::default()
@@ -1508,11 +1677,13 @@ mod tests {
             &obs.descriptors,
             &mut rng,
         ) {
-            Err(Rejection::TooFewMatches { matches, required }) => {
+            Err(Rejection::TooFewInliers {
+                inliers, required, ..
+            }) => {
                 assert_eq!(required, 100_000);
-                assert!(matches > 20, "{matches}");
+                assert!(inliers > 20, "{inliers}");
             }
-            other => panic!("expected TooFewMatches, got {other:?}"),
+            other => panic!("expected TooFewInliers, got {other:?}"),
         }
 
         // The same descriptors against shuffled pixels: the matcher is happy,

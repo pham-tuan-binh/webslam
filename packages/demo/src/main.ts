@@ -32,8 +32,8 @@ const video = el<HTMLVideoElement>('feed');
 const canvas = el<HTMLCanvasElement>('scene');
 const gate = el('gate');
 const startButton = el<HTMLButtonElement>('start');
-const viewToggle = el<HTMLButtonElement>('view-toggle');
 const gateError = el('gate-error');
+const trailLength = el('trail-length');
 const stateDot = el('state-dot');
 const stateLabel = el('state-label');
 const scaleBadge = el('scale-badge');
@@ -104,9 +104,9 @@ function announce(text: string, kind: 'accept' | 'reject' | 'plain' = 'plain'): 
 
 /** Percent-formatted 1-sigma scale uncertainty, or the honest "up to scale". */
 function describeScale(pose: Pose): string {
-  if (pose.scale.source === 'none') return 'scale: none · up to scale';
+  if (pose.scale.source === 'none') return 'SCALE NONE · UP TO SCALE';
   const pct = 100 * Math.sqrt(pose.scale.variance);
-  return `scale: ${pose.scale.source} · ±${pct.toFixed(2)}%`;
+  return `SCALE ${pose.scale.source} ±${pct.toFixed(2)}%`;
 }
 
 function renderTimings(t: Record<string, number>): void {
@@ -148,24 +148,21 @@ async function main(): Promise<void> {
 
   const sync = new CameraSync(scene.camera, { holdOnLoss: true });
 
-  // The AR view is driven by the pose, so a drifting map and a perfect one look
-  // identical through it. The map view puts the reconstruction in front of you:
-  // landmark cloud, keyframe frusta, the trajectory, and the live pose as a
-  // larger pink frustum. If that frustum wanders off the keyframe trail, that
-  // is the drift.
-  viewToggle.addEventListener('click', () => {
-    const next = scene.viewMode === 'ar' ? 'map' : 'ar';
-    scene.setMode(next);
-    viewToggle.textContent = `view: ${next === 'map' ? 'map' : 'AR'}`;
-    video.style.opacity = next === 'map' ? '0.12' : '1';
-  });
-
-  // Drag to orbit, pinch or wheel to zoom. Deliberately hand-rolled: the demo
-  // ships to a phone and OrbitControls is a large dependency for two gestures.
+  // The AR pane is driven by the pose, so a drifting map and a perfect one
+  // look identical through it. The trajectory pane beneath puts the
+  // reconstruction in front of you: the trail, the landmark cloud, the
+  // keyframe frusta, and the live pose. If the live frustum wanders off the
+  // keyframe trail, that is the drift — permanently on screen, not behind a
+  // toggle.
+  //
+  // Drag to orbit, pinch or wheel to zoom — gestures belong to the bottom
+  // pane only. Deliberately hand-rolled: the demo ships to a phone and
+  // OrbitControls is a large dependency for two gestures.
+  const inBottomPane = (y: number): boolean => y > innerHeight / 2;
   let drag: { x: number; y: number } | null = null;
   let pinch = 0;
   canvas.addEventListener('pointerdown', (e) => {
-    if (scene.viewMode === 'map') drag = { x: e.clientX, y: e.clientY };
+    if (inBottomPane(e.clientY)) drag = { x: e.clientX, y: e.clientY };
   });
   addEventListener('pointerup', () => (drag = null));
   addEventListener('pointermove', (e) => {
@@ -174,12 +171,12 @@ async function main(): Promise<void> {
     drag = { x: e.clientX, y: e.clientY };
   });
   canvas.addEventListener('wheel', (e) => {
-    if (scene.viewMode !== 'map') return;
+    if (!inBottomPane(e.clientY)) return;
     e.preventDefault();
     scene.orbitBy(0, 0, e.deltaY > 0 ? 1.1 : 0.9);
   }, { passive: false });
   canvas.addEventListener('touchmove', (e) => {
-    if (scene.viewMode !== 'map' || e.touches.length !== 2) return;
+    if (e.touches.length !== 2 || !inBottomPane(e.touches[0].clientY)) return;
     const [a, b] = [e.touches[0], e.touches[1]];
     const d = Math.hypot(a.clientX - b.clientX, a.clientY - b.clientY);
     if (pinch) scene.orbitBy(0, 0, pinch / d);
@@ -261,8 +258,12 @@ async function main(): Promise<void> {
     // bootstrap has not seen enough parallax yet, which needs sideways motion
     // rather than rotation.
     const featureCount = debug.features().length;
-    landmarkCount.textContent = `${featureCount} feat · ${debug.landmarks().length / 3} landmarks`;
-    keyframeCount.textContent = `${debug.keyframes().length} keyframes`;
+    landmarkCount.textContent = `${featureCount} FEAT · ${debug.landmarks().length / 3} LANDMARKS`;
+    keyframeCount.textContent = `${debug.keyframes().length} KEYFRAMES`;
+    // Path length in map units — honest about scale: the unit suffix only
+    // claims metres when a scale source has actually anchored the session.
+    const metric = pose ? pose.scale.source !== 'none' : false;
+    trailLength.textContent = `PATH ${scene.trailLength().toFixed(1)} ${metric ? 'M' : 'U'}`;
     renderTimings(debug.timings() as unknown as Record<string, number>);
 
     frames++;

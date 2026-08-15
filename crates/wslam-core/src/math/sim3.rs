@@ -176,6 +176,58 @@ pub fn umeyama(source: &[Vec3], target: &[Vec3], estimate_scale: bool) -> Option
     })
 }
 
+/// RANSAC-robustified [`umeyama`].
+///
+/// Least-squares similarity alignment is exquisitely sensitive to outliers —
+/// one triangulation blunder among 20 pairs drags both the rotation and the
+/// scale, and a Sim(3) used to fold a whole coordinate frame (the epoch-merge
+/// path) turns that blunder into a systematic error on every pose. So: sample
+/// minimal 3-pair subsets, score by inliers within `threshold` (in target
+/// units), refit on the best consensus set.
+///
+/// Returns the refit alignment together with the consensus size, or `None`
+/// when no sample produced at least `min_inliers` agreeing pairs.
+#[must_use]
+pub fn umeyama_ransac(
+    source: &[Vec3],
+    target: &[Vec3],
+    threshold: Scalar,
+    iterations: usize,
+    min_inliers: usize,
+    rng: &mut crate::rng::DeterministicRng,
+) -> Option<(Alignment, usize)> {
+    let n = source.len();
+    if n < 3 || target.len() != n || threshold <= 0.0 {
+        return None;
+    }
+    let t2 = threshold * threshold;
+    let mut best: Option<Vec<usize>> = None;
+    for _ in 0..iterations {
+        let (a, b, c) = (rng.below(n), rng.below(n), rng.below(n));
+        if a == b || b == c || a == c {
+            continue;
+        }
+        let src = [source[a], source[b], source[c]];
+        let tgt = [target[a], target[b], target[c]];
+        let Some(candidate) = umeyama(&src, &tgt, true) else {
+            continue;
+        };
+        let inliers: Vec<usize> = (0..n)
+            .filter(|&i| (target[i] - candidate.transform.act(&source[i])).norm_squared() <= t2)
+            .collect();
+        if inliers.len() >= best.as_ref().map_or(3, Vec::len) {
+            best = Some(inliers);
+        }
+    }
+    let inliers = best?;
+    if inliers.len() < min_inliers.max(3) {
+        return None;
+    }
+    let src: Vec<Vec3> = inliers.iter().map(|&i| source[i]).collect();
+    let tgt: Vec<Vec3> = inliers.iter().map(|&i| target[i]).collect();
+    umeyama(&src, &tgt, true).map(|a| (a, inliers.len()))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -242,5 +294,42 @@ mod tests {
         );
         let p = Vec3::new(0.4, -0.9, 2.0);
         assert_relative_eq!(s.inverse().act(&s.act(&p)), p, epsilon = 1e-12);
+    }
+
+    #[test]
+    fn ransac_survives_gross_outliers_that_break_least_squares() {
+        let truth = Sim3::new(
+            So3::exp(&Vec3::new(0.3, -0.1, 0.2)),
+            Vec3::new(2.0, -1.0, 0.5),
+            1.8,
+        );
+        let mut rng = crate::rng::DeterministicRng::new("sim3-ransac", 20260801);
+        let mut source = Vec::new();
+        let mut target = Vec::new();
+        for _ in 0..20 {
+            let p = Vec3::new(
+                rng.uniform_range(-3.0, 3.0),
+                rng.uniform_range(-3.0, 3.0),
+                rng.uniform_range(-3.0, 3.0),
+            );
+            source.push(p);
+            target.push(truth.act(&p));
+        }
+        // Four triangulation blunders, meters wrong.
+        for i in [2usize, 7, 11, 16] {
+            target[i] += Vec3::new(15.0, -9.0, 22.0);
+        }
+
+        // Least squares is dragged far off by the outliers…
+        let ls = umeyama(&source, &target, true).unwrap();
+        assert!((ls.transform.scale() - truth.scale()).abs() > 0.05);
+
+        // …RANSAC is not, and reports the honest consensus size.
+        let (robust, inliers) = umeyama_ransac(&source, &target, 1e-6, 200, 10, &mut rng).unwrap();
+        assert_eq!(inliers, 16);
+        assert_relative_eq!(robust.transform.scale(), truth.scale(), epsilon = 1e-9);
+        for (s, t) in source.iter().zip(&target).take(2) {
+            assert_relative_eq!(robust.transform.act(s), *t, epsilon = 1e-6);
+        }
     }
 }

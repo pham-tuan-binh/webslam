@@ -24,7 +24,7 @@ mod sim3;
 mod so3;
 
 pub use se3::Se3;
-pub use sim3::{umeyama, Alignment, Sim3};
+pub use sim3::{umeyama, umeyama_ransac, Alignment, Sim3};
 pub use so3::So3;
 
 /// Scalar type used for all geometry. Image data is `u8`/`f32`; geometry is f64.

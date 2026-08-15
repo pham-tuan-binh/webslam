@@ -6,46 +6,65 @@
       name="viewport"
       content="width=device-width, initial-scale=1, maximum-scale=1, viewport-fit=cover"
     />
-    <meta name="theme-color" content="#08090c" />
+    <meta name="theme-color" content="#060709" />
     <title>web-slam</title>
     <link rel="stylesheet" href="./src/style.css" />
   </head>
   <body>
-    <!-- The camera feed sits underneath everything; the WebGL canvas composites
-         the landmark cloud and trajectory over it. `playsinline` is required on
-         iOS or the video takes over the screen. -->
+    <!-- Split view: camera on the top half, the trajectory visualizer on the
+         bottom. One WebGL canvas spans both — the renderer scissors it into
+         two viewports, so the AR overlay and the map share every buffer.
+         `playsinline` is required on iOS or the video takes over the screen. -->
     <video id="feed" playsinline muted></video>
     <canvas id="scene"></canvas>
 
-    <div id="hud">
-      <div class="row">
+    <header id="topbar">
+      <div class="cluster">
+        <span class="wordmark">WEB&#8209;SLAM</span>
+        <span class="rule-v"></span>
         <span id="state-dot" class="dot"></span>
-        <span id="state-label">idle</span>
-        <span id="scale-badge" class="badge">scale: none</span>
+        <span id="state-label" class="value">idle</span>
       </div>
-      <div class="row muted">
-        <span id="landmark-count">0 landmarks</span>
-        <span id="keyframe-count">0 keyframes</span>
-        <span id="fps">– fps</span>
-        <button id="view-toggle" class="badge" type="button">view: AR</button>
+      <div class="cluster">
+        <span id="scale-badge" class="value muted">SCALE NONE</span>
+        <span class="rule-v"></span>
+        <span id="fps" class="value">&ndash; FPS</span>
       </div>
-      <div id="timings" class="timings"></div>
-    </div>
+    </header>
 
     <div id="events" aria-live="polite"></div>
 
+    <!-- The seam between the two panes. -->
+    <div id="divider">
+      <span class="pane-label">CAMERA</span>
+      <span class="pane-label">TRAJECTORY</span>
+    </div>
+
+    <footer id="botbar">
+      <div class="cluster">
+        <span id="landmark-count" class="value muted">0 LANDMARKS</span>
+        <span class="rule-v"></span>
+        <span id="keyframe-count" class="value muted">0 KEYFRAMES</span>
+        <span class="rule-v"></span>
+        <span id="trail-length" class="value">PATH 0.0</span>
+      </div>
+      <div id="timings" class="timings"></div>
+    </footer>
+
     <div id="gate">
       <div class="gate-card">
-        <h1>web-slam</h1>
+        <h1>WEB&#8209;SLAM</h1>
+        <p class="tagline">6&#8209;DOF POSE &middot; STOCK MOBILE BROWSER</p>
+        <hr />
         <p>
-          6-DoF pose in a stock mobile browser. This build runs the
-          <strong>stub backend</strong> &mdash; synthetic poses, no tracking.
+          Camera on top, live trajectory beneath. Poses come from the wasm
+          pipeline when the artifact is built, and from the stub otherwise.
         </p>
         <p class="fine">
           iOS requires a tap before motion sensors are available. That is a
           platform constraint, not a design choice.
         </p>
-        <button id="start">Start</button>
+        <button id="start">START</button>
         <p id="gate-error" class="error"></p>
       </div>
     </div>

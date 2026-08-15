@@ -214,7 +214,7 @@ Every gate below is green as of the initial build. `cargo xtask ci` runs them al
 
 | Check | Result |
 |---|---|
-| `cargo test --workspace --all-features` | **754 passed, 0 failed** |
+| `cargo test --workspace --all-features` | **774 passed, 0 failed** |
 | `packages/web-slam` API conformance (vitest) | 34 passed |
 | `rigs` Tier-1 instrument tests (pytest) | 8 passed |
 | `cargo clippy --all-targets --all-features -- -D warnings` | clean |
@@ -223,21 +223,37 @@ Every gate below is green as of the initial build. `cargo xtask ci` runs them al
 | `cargo check -p wslam-wasm --target wasm32-unknown-unknown` | builds |
 | `packages/demo` production build | builds |
 
-796 tests total. Layers L0–L6, the orchestrator, the wasm boundary, the npm
+816 tests total. Layers L0–L6, the orchestrator, the wasm boundary, the npm
 package, the demo and the replay harness are all implemented and covered.
 
-**What is not yet measured on real data**, stated plainly because the project's
+**What is measured on real data**, stated plainly because the project's
 thesis is that its numbers can be trusted:
 
-- **L3 ATE has now been measured, and it fails.** 3.57 m RMSE on EuRoC
-  `MH_01_easy` against ~0.05 m published, with ~30% of frames producing no pose.
-  The cause is a discrete failure, not drift: on tracking loss the tracker
-  re-bootstraps into a fresh arbitrary scale and the session splices the segments
-  together, because relocalization never fires. Full evidence and ranked next
-  work in [`docs/VERIFICATION.md`](./docs/VERIFICATION.md).
+- **L3 ATE, GPU front-end, EuRoC `MH_01_easy`: 0.309 m RMSE at 100% coverage,
+  0.1% frame loss.** Down from the 3.57 m headline this section used to carry.
+  What moved it: the GPU image front-end (also ~15× faster than the CPU
+  reference at 1.3 ms/frame median), relocalization that actually fires
+  (covisibility-expanded matching plus a projection-guided second pass — the
+  old matcher starved one or two correspondences short of the gate on every
+  real attempt), Sim(3) epoch merging when place recognition proves a
+  post-loss segment overlaps an older one (ORB-SLAM3's map merge, solved by
+  RANSAC-robust Umeyama on matched landmark pairs), and an orientation prior
+  that is gated and per-frame arbitrated instead of trusted (the ungated
+  prior was *costing* accuracy; see `docs/VERIFICATION.md`).
+  Still 3–20× above the 0.016–0.100 m published band — the remaining gap is
+  within-segment drift, and the honest next step is a Sim(3)-aware backend,
+  not parameter tuning (every knob combination that helped one sequence hurt
+  the others; the measurements are in the doc).
   **Use EuRoC, not TUM-VI:** TUM-VI is fisheye (Kannala-Brandt) and this build
   implements Brown-Conrady only, so the loader refuses it rather than misreading
   the coefficients. See `datasets/README.md`.
+- **Loop closure verifies but contributes no pose-graph edges.** Measured on
+  MH_01: every edge weighting tried made the corrected trajectory *worse* than
+  the raw one, because at 0.3 m of drift the closure's own error — landmark
+  drift the PnP covariance cannot see, plus monocular scale drift an SE(3)
+  edge cannot express — exceeds the drift it could fix. A verified loop's
+  value today is what it proves (same place, both frames), which is what the
+  epoch merge consumes. The edges come back when the graph speaks Sim(3).
 - **L5 scale error %** and **L6 NEES on real data** have no metric ground-truth
   source, because the robot-arm rig is out of scope. Both are validated
   synthetically. See `rigs/README.md` and `docs/VERIFICATION.md`.

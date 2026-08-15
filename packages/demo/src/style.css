@@ -1,191 +1,259 @@
-/*
- * The demo is the adoption artifact (spec.md §8), so it should not look like a
- * test page. One accent colour, one typeface stack, generous negative space,
- * and every number on screen legible at arm's length on a phone in daylight.
- */
+/* Telemetry styling: near-black surfaces, hairline rules, uppercase microtype,
+ * tabular numerals. Flat by decree — no border-radius, no blur, no glow — so
+ * every edge is a 1px line and every surface is a solid. */
 
 :root {
-  --ink: #f2f4f8;
-  --ink-dim: #99a2b3;
-  --bg: #08090c;
-  --accent: #5eead4;
-  --warn: #fbbf24;
-  --bad: #f87171;
-  --panel: rgba(10, 12, 18, 0.72);
-  --hairline: rgba(255, 255, 255, 0.1);
-  font-family: ui-monospace, "SF Mono", "JetBrains Mono", Menlo, monospace;
+  --surface: #060709;
+  --surface-raised: #0b0d10;
+  --hairline: #1c2126;
+  --ink: #e6e8eb;
+  --ink-secondary: #9aa3ad;
+  --ink-muted: #566069;
+  --accent: #6fb7e8;
+  --good: #2fbf71;
+  --warn: #d9a514;
+  --bad: #d64545;
+  --bar-height: 34px;
+  font-family: 'Helvetica Neue', Helvetica, Arial, sans-serif;
 }
 
 * {
+  margin: 0;
+  padding: 0;
   box-sizing: border-box;
+  border-radius: 0;
 }
 
 html,
 body {
-  margin: 0;
   height: 100%;
   overflow: hidden;
-  background: var(--bg);
+  background: var(--surface);
   color: var(--ink);
   -webkit-font-smoothing: antialiased;
-  overscroll-behavior: none;
-  touch-action: none;
 }
 
-#feed,
-#scene {
-  position: fixed;
-  inset: 0;
-  width: 100%;
-  height: 100%;
-}
+/* ---- the two panes ------------------------------------------------------ */
 
+/* Camera feed fills the top half only. */
 #feed {
+  position: fixed;
+  top: var(--bar-height);
+  left: 0;
+  width: 100vw;
+  height: calc(50vh - var(--bar-height));
   object-fit: cover;
-  /* The stub backend has no real camera relationship, but the demo still shows
-     the live feed so the composite is honest about what is overlaid on what. */
   background: #000;
 }
 
+/* One canvas over everything; the renderer scissors it into the AR viewport
+ * (top, transparent over the video) and the map viewport (bottom, opaque). */
 #scene {
-  pointer-events: none;
-}
-
-#hud {
   position: fixed;
-  top: max(1rem, env(safe-area-inset-top));
-  left: max(1rem, env(safe-area-inset-left));
-  right: max(1rem, env(safe-area-inset-right));
-  padding: 0.75rem 0.9rem;
-  border: 1px solid var(--hairline);
-  border-radius: 12px;
-  background: var(--panel);
-  backdrop-filter: blur(14px);
-  -webkit-backdrop-filter: blur(14px);
-  font-size: 0.78rem;
-  line-height: 1.7;
-  letter-spacing: 0.01em;
-  display: grid;
-  gap: 0.15rem;
-  max-width: 30rem;
+  inset: 0;
+  width: 100vw;
+  height: 100vh;
+  display: block;
+  touch-action: none;
 }
 
-.row {
+/* ---- chrome -------------------------------------------------------------- */
+
+#topbar,
+#botbar {
+  position: fixed;
+  left: 0;
+  width: 100vw;
+  height: var(--bar-height);
   display: flex;
   align-items: center;
-  gap: 0.7rem;
-  flex-wrap: wrap;
+  justify-content: space-between;
+  padding: 0 12px;
+  background: var(--surface);
+  z-index: 3;
 }
 
-.muted {
-  color: var(--ink-dim);
+#topbar {
+  top: 0;
+  border-bottom: 1px solid var(--hairline);
 }
 
-.dot {
-  width: 0.6rem;
-  height: 0.6rem;
-  border-radius: 50%;
-  background: var(--ink-dim);
-  box-shadow: 0 0 0.5rem currentColor;
-  transition: background 160ms ease;
-  flex: 0 0 auto;
+#botbar {
+  bottom: 0;
+  border-top: 1px solid var(--hairline);
 }
 
-.dot[data-state="tracking"] {
-  background: var(--accent);
-}
-.dot[data-state="limited"] {
-  background: var(--warn);
-}
-.dot[data-state="lost"],
-.dot[data-state="relocalizing"] {
-  background: var(--bad);
+.cluster {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
 }
 
-#state-label {
-  font-weight: 600;
-  text-transform: lowercase;
+.wordmark {
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.18em;
 }
 
-.badge {
-  margin-left: auto;
-  padding: 0.1rem 0.5rem;
-  border: 1px solid var(--hairline);
-  border-radius: 999px;
-  color: var(--ink-dim);
-  font-size: 0.7rem;
+.value {
+  font-size: 10px;
+  font-weight: 500;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  font-variant-numeric: tabular-nums;
   white-space: nowrap;
 }
 
-.timings {
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(4.2rem, 1fr));
-  gap: 0.35rem;
-  margin-top: 0.35rem;
-  padding-top: 0.5rem;
-  border-top: 1px solid var(--hairline);
-  font-size: 0.65rem;
-  color: var(--ink-dim);
+.muted {
+  color: var(--ink-secondary);
 }
 
-.timings div {
-  display: grid;
-  gap: 0.1rem;
+.rule-v {
+  width: 1px;
+  height: 12px;
+  background: var(--hairline);
 }
 
-.timings b {
-  color: var(--ink);
-  font-weight: 600;
+/* State indicator: a square, because circles are soft. Color never stands
+ * alone — the label beside it names the state. */
+.dot {
+  width: 8px;
+  height: 8px;
+  background: var(--ink-muted);
 }
-
-.timings .bar {
-  height: 2px;
+.dot[data-state='tracking'] {
+  background: var(--good);
+}
+.dot[data-state='limited'] {
+  background: var(--warn);
+}
+.dot[data-state='lost'],
+.dot[data-state='relocalizing'] {
+  background: var(--bad);
+}
+.dot[data-state='initializing'] {
   background: var(--accent);
-  border-radius: 1px;
-  opacity: 0.75;
 }
+
+/* ---- the seam ------------------------------------------------------------ */
+
+#divider {
+  position: fixed;
+  top: 50vh;
+  left: 0;
+  width: 100vw;
+  height: 0;
+  border-top: 1px solid var(--hairline);
+  z-index: 3;
+  pointer-events: none;
+}
+
+.pane-label {
+  position: absolute;
+  left: 12px;
+  font-size: 9px;
+  font-weight: 600;
+  letter-spacing: 0.16em;
+  color: var(--ink-muted);
+  background: var(--surface);
+  padding: 2px 6px;
+}
+
+.pane-label:first-child {
+  transform: translateY(calc(-100% - 1px));
+}
+
+.pane-label:last-child {
+  transform: translateY(1px);
+}
+
+/* ---- events feed --------------------------------------------------------- */
 
 #events {
   position: fixed;
-  bottom: max(1rem, env(safe-area-inset-bottom));
-  left: max(1rem, env(safe-area-inset-left));
-  display: grid;
-  gap: 0.35rem;
-  font-size: 0.72rem;
+  top: calc(var(--bar-height) + 10px);
+  right: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  align-items: flex-end;
+  z-index: 3;
   pointer-events: none;
 }
 
 .event {
-  padding: 0.35rem 0.6rem;
-  border-radius: 8px;
+  font-size: 10px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  font-variant-numeric: tabular-nums;
+  color: var(--ink);
+  background: var(--surface);
   border: 1px solid var(--hairline);
-  background: var(--panel);
-  backdrop-filter: blur(10px);
-  animation: rise 320ms ease both;
+  border-left-width: 3px;
+  padding: 4px 8px;
 }
 
 .event.accept {
-  border-color: rgba(94, 234, 212, 0.45);
-}
-.event.reject {
-  border-color: rgba(248, 113, 113, 0.45);
-  color: var(--ink-dim);
+  border-left-color: var(--good);
 }
 
-@keyframes rise {
-  from {
-    opacity: 0;
-    transform: translateY(6px);
+.event.reject {
+  border-left-color: var(--bad);
+}
+
+/* ---- stage timings ------------------------------------------------------- */
+
+.timings {
+  display: flex;
+  gap: 12px;
+  align-items: center;
+}
+
+.timings > div {
+  display: grid;
+  grid-template-columns: auto auto;
+  grid-template-rows: auto 2px;
+  column-gap: 5px;
+  align-items: baseline;
+}
+
+.timings span {
+  font-size: 9px;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--ink-muted);
+}
+
+.timings b {
+  font-size: 9px;
+  font-weight: 500;
+  font-variant-numeric: tabular-nums;
+  color: var(--ink-secondary);
+}
+
+.timings .bar {
+  grid-column: 1 / -1;
+  height: 2px;
+  background: var(--ink-secondary);
+}
+
+/* On a phone the stage timings do not fit beside the counters; the counters
+ * are the ones a viewer needs. */
+@media (max-width: 720px) {
+  .timings {
+    display: none;
   }
 }
+
+/* ---- the gate ------------------------------------------------------------ */
 
 #gate {
   position: fixed;
   inset: 0;
   display: grid;
   place-items: center;
-  padding: 1.5rem;
-  background: radial-gradient(120% 90% at 50% 0%, #101725 0%, var(--bg) 70%);
+  background: var(--surface);
   z-index: 10;
 }
 
@@ -194,69 +262,71 @@ body {
 }
 
 .gate-card {
-  max-width: 26rem;
-  text-align: left;
-  display: grid;
-  gap: 0.85rem;
+  width: min(420px, calc(100vw - 48px));
+  border: 1px solid var(--hairline);
+  padding: 28px;
+  background: var(--surface-raised);
 }
 
 .gate-card h1 {
-  margin: 0;
-  font-size: 2.1rem;
-  letter-spacing: -0.03em;
-  font-weight: 600;
+  font-size: 20px;
+  font-weight: 700;
+  letter-spacing: 0.22em;
+}
+
+.gate-card .tagline {
+  margin-top: 6px;
+  font-size: 10px;
+  letter-spacing: 0.14em;
+  color: var(--ink-secondary);
+}
+
+.gate-card hr {
+  margin: 16px 0;
+  border: 0;
+  border-top: 1px solid var(--hairline);
 }
 
 .gate-card p {
-  margin: 0;
-  color: var(--ink-dim);
-  line-height: 1.65;
-  font-size: 0.85rem;
+  font-size: 13px;
+  line-height: 1.55;
+  color: var(--ink-secondary);
 }
 
 .gate-card .fine {
-  font-size: 0.75rem;
-  opacity: 0.72;
-}
-
-.gate-card strong {
-  color: var(--ink);
-  font-weight: 600;
+  margin-top: 10px;
+  font-size: 11px;
+  color: var(--ink-muted);
 }
 
 #start {
-  margin-top: 0.4rem;
-  padding: 0.85rem 1.4rem;
+  margin-top: 20px;
+  width: 100%;
+  padding: 12px 0;
   font: inherit;
-  font-weight: 600;
-  color: var(--bg);
-  background: var(--accent);
-  border: none;
-  border-radius: 10px;
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.2em;
+  color: var(--surface);
+  background: var(--ink);
+  border: 1px solid var(--ink);
   cursor: pointer;
-  transition: transform 120ms ease, filter 120ms ease;
 }
 
-#start:active {
-  transform: scale(0.98);
-  filter: brightness(0.94);
+#start:hover {
+  background: transparent;
+  color: var(--ink);
 }
 
-.error:empty {
-  display: none;
+#start:disabled {
+  opacity: 0.4;
+  cursor: default;
 }
 
 .error {
+  margin-top: 12px;
+  font-size: 11px;
+  letter-spacing: 0.06em;
   color: var(--bad);
-  font-size: 0.78rem;
-  padding: 0.5rem 0.7rem;
-  border: 1px solid rgba(248, 113, 113, 0.35);
-  border-radius: 8px;
-}
-
-@media (prefers-reduced-motion: reduce) {
-  * {
-    animation: none !important;
-    transition: none !important;
-  }
+  min-height: 1em;
 }

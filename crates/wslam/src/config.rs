@@ -68,6 +68,13 @@ pub struct MapConfig {
     /// certain than its origin"*, so this is added to the anchor's own
     /// variance, never substituted for it.
     pub reloc_scale_variance: Scalar,
+    /// Inliers a loop closure needs on top of relocalization's `min_inliers`.
+    ///
+    /// A wrong relocalization strands one session; a wrong loop edge bends the
+    /// whole graph through pose-graph optimisation, so loops are held to a
+    /// stricter bar. ORB-SLAM uses 40 here against 15–20 for relocalization,
+    /// for the same asymmetry-of-damage reason.
+    pub loop_min_inliers: usize,
 }
 
 impl Default for MapConfig {
@@ -76,9 +83,14 @@ impl Default for MapConfig {
             enabled: true,
             max_keyframes: 300,
             reloc_delay_frames: 3,
-            loop_exclude_recent: 12,
+            // 48, not 12: with keyframes every few frames, 12 leaves loop
+            // closure free to "recognise" places seen seconds ago, where the
+            // accumulated drift is smaller than the closure's own PnP noise —
+            // edges that can only make the graph worse. Measured on MH_01.
+            loop_exclude_recent: 48,
             backend_budget_ms: 4.0,
             reloc_scale_variance: 4e-4,
+            loop_min_inliers: 40,
         }
     }
 }
@@ -147,6 +159,21 @@ pub struct SlamConfig {
     /// Set to zero to always use the prior, or to infinity to never use it —
     /// both are useful for ablation and neither is a good default.
     pub min_prior_rotation_rad: Scalar,
+    /// Largest predicted inter-frame rotation, in radians, the prior is
+    /// trusted for. Gyro integration error grows with angular rate, so the
+    /// prediction is withheld during the most violent rotations rather than
+    /// trusted most there.
+    pub max_prior_rotation_rad: Scalar,
+    /// Recent prior error (EWMA, radians) above which the orientation prior
+    /// is withheld from L3.
+    ///
+    /// The prior's failure mode is a heavy tail, not a bias: its inter-frame
+    /// error sits well under 0.5° most of the time and then spikes for
+    /// stretches, and during a spike every KLT seed is misdirected at once —
+    /// measured on EuRoC MH_01 CPU, the ungated prior turned a 0.66 m
+    /// trajectory into a 2.30 m one. 0.5° ≈ 4 px at EuRoC's focal length,
+    /// about the largest displacement the pyramid absorbs without help.
+    pub max_prior_error_rad: Scalar,
     /// Rotation taking **camera** axes into **IMU body** axes, `R_body_camera`.
     ///
     /// L1 estimates attitude in the body frame the inertial sensor reports in;
@@ -181,6 +208,8 @@ impl SlamConfig {
             // for a synthetic rig and wrong for every real device.
             // ~1.7 deg, just above the 0.88 deg p95 error measured on EuRoC.
             min_prior_rotation_rad: 0.03,
+            max_prior_rotation_rad: 0.05,
+            max_prior_error_rad: 0.5_f64.to_radians(),
             body_from_camera: So3::identity(),
             seed: 0x5eed,
         }

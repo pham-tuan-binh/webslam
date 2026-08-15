@@ -48,6 +48,11 @@ use crate::triangulate::{self, TriangulationConfig};
 /// four; six leaves enough redundancy for RANSAC to mean something.
 const MIN_PNP_CORRESPONDENCES: usize = 6;
 
+/// Features in the with/without-prior trial subsample. Large enough that the
+/// majority verdict is stable, small enough that two extra passes over it are
+/// noise in the frame budget.
+const PRIOR_TRIAL_FEATURES: usize = 24;
+
 /// Consecutive frames without a pose solve before the session is declared lost
 /// rather than limited. One dropped frame is an occlusion; three is a loss.
 const LOST_AFTER_FAILURES: u32 = 3;
@@ -210,6 +215,13 @@ impl LocalMap {
     /// it is the only thing entitled to move a landmark after triangulation.
     pub(crate) fn get_mut(&mut self, id: u64) -> Option<&mut LocalLandmark> {
         self.index.get(&id).copied().map(|i| &mut self.landmarks[i])
+    }
+
+    /// Every landmark, mutably — for the epoch merge, which re-expresses the
+    /// whole map in another coordinate frame at once. Not for point-wise
+    /// correction; that is [`LocalMap::get_mut`]'s job.
+    pub(crate) fn landmarks_mut(&mut self) -> impl Iterator<Item = &mut LocalLandmark> {
+        self.landmarks.iter_mut()
     }
 
     /// Borrow a landmark by id.
@@ -731,6 +743,51 @@ impl Tracker {
         self.covariance = Mat6::identity() * Scalar::INFINITY;
     }
 
+    /// Re-express every tracked quantity in a similarity-transformed frame:
+    /// `p ↦ s·R·p + t` for points, with rotations composed and camera centres
+    /// treated as points.
+    ///
+    /// The epoch-merge path: when place recognition proves this session's
+    /// current coordinate frame overlaps an older one, the orchestrator solves
+    /// the Sim(3) between them and folds the tracker into the older frame
+    /// mid-flight, so tracking continues without a reset. Everything metric is
+    /// transformed — pose, local map, the BA window and its poses, the
+    /// bootstrap reference — because a half-transformed tracker mixes frames
+    /// and PnP diverges on the next solve.
+    pub fn apply_similarity(&mut self, rotation: &So3, translation: &Vec3, scale: Scalar) {
+        let act_point = |p: &Vec3| rotation.act(p) * scale + translation;
+        let act_pose = |pose: &Se3| {
+            Se3::new(
+                rotation.compose(&pose.rotation()),
+                act_point(&pose.translation()),
+            )
+        };
+        if let Some(pose) = self.pose.as_mut() {
+            *pose = act_pose(pose);
+        }
+        for landmark in self.map.landmarks_mut() {
+            landmark.position = act_point(&landmark.position);
+        }
+        for kf in &mut self.window {
+            kf.pose = act_pose(&kf.pose);
+        }
+        if let Some(kf) = self.keyframe.as_mut() {
+            kf.pose = act_pose(&kf.pose);
+        }
+        if let Some(b) = self.bootstrap.as_mut() {
+            b.pose = act_pose(&b.pose);
+        }
+        // Translation variance scales with the square of the unit change;
+        // rotation variance is scale-free.
+        let s2 = scale * scale;
+        let mut tt = self.covariance.fixed_view_mut::<3, 3>(0, 0);
+        tt *= s2;
+        let mut tr = self.covariance.fixed_view_mut::<3, 3>(0, 3);
+        tr *= scale;
+        let mut rt = self.covariance.fixed_view_mut::<3, 3>(3, 0);
+        rt *= scale;
+    }
+
     /// The active local map.
     #[must_use]
     pub fn local_map(&self) -> &LocalMap {
@@ -1047,7 +1104,36 @@ impl Tracker {
             return FlowSummary::default();
         }
         let points: Vec<Vec2> = self.features.iter().map(|f| f.px).collect();
-        let guesses = self.predict(prior);
+        let mut guesses = self.predict(prior);
+        // The prior models pure rotation. On rotation-in-place it is exact;
+        // under fast translation the parallax it cannot express displaces
+        // every seed at once, and no threshold on the *rotation* can see the
+        // difference — the same predicted angle is a good prior while hovering
+        // and a bad one mid-dash (measured: the ungated prior held tier 2
+        // above tier 1 on every fast EuRoC sequence). So arbitrate per frame,
+        // empirically: track a small spread of features both ways and let
+        // whichever mode keeps more of them take the frame. Costs two
+        // subsample passes on prior frames only.
+        if let Some(g) = guesses.as_deref() {
+            if self.backend != Backend::Gpu && points.len() >= 2 * PRIOR_TRIAL_FEATURES {
+                let stride = points.len() / PRIOR_TRIAL_FEATURES;
+                let idx: Vec<usize> = (0..PRIOR_TRIAL_FEATURES).map(|i| i * stride).collect();
+                let sub_pts: Vec<Vec2> = idx.iter().map(|&i| points[i]).collect();
+                let sub_guess: Vec<Vec2> = idx.iter().map(|&i| g[i]).collect();
+                let config = self.klt_config();
+                let with = klt::track(prev, next, &sub_pts, Some(&sub_guess), &config)
+                    .iter()
+                    .filter(|r| r.ok())
+                    .count();
+                let without = klt::track(prev, next, &sub_pts, None, &config)
+                    .iter()
+                    .filter(|r| r.ok())
+                    .count();
+                if with <= without {
+                    guesses = None;
+                }
+            }
+        }
         // Copied out before the drain below borrows `self.features` mutably.
         let intrinsics = self.intrinsics;
         #[cfg(feature = "gpu")]

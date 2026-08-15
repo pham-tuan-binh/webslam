@@ -376,6 +376,37 @@ impl PoseGraph {
         self.index.get(&id.0).map(|&k| self.nodes[k].pose)
     }
 
+    /// Overwrite a node's estimate. The epoch-merge path: when a whole
+    /// coordinate frame is re-expressed through a Sim(3), every node born in
+    /// it moves at once. Returns `false` if the keyframe is not in the graph.
+    pub fn set_pose(&mut self, id: KeyframeId, pose: Se3) -> bool {
+        match self.index.get(&id.0) {
+            Some(&k) => {
+                self.nodes[k].pose = pose;
+                true
+            }
+            None => false,
+        }
+    }
+
+    /// Rescale the translational part of every edge between the given nodes.
+    ///
+    /// A similarity with scale `s` maps a relative measurement
+    /// `T_ij = T_i⁻¹∘T_j` to one with the same rotation and `s·t_ij`: the
+    /// rotations cancel the similarity's, the baseline does not. Edges with
+    /// only one endpoint in `ids` are left alone — those cross the frame
+    /// boundary and are the caller's problem to re-derive or drop.
+    pub fn rescale_edges_within(&mut self, ids: &std::collections::HashSet<KeyframeId>, s: f64) {
+        for edge in &mut self.edges {
+            if ids.contains(&edge.from) && ids.contains(&edge.to) {
+                edge.measurement = Se3::new(
+                    edge.measurement.rotation(),
+                    edge.measurement.translation() * s,
+                );
+            }
+        }
+    }
+
     /// All edges, in insertion order — including ones the solver skips, because
     /// the debug surface (spec.md §3) wants to draw rejected candidates too.
     #[must_use]

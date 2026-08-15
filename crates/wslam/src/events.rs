@@ -56,6 +56,23 @@ pub enum SlamEvent {
         /// The estimate, including which ruler produced it.
         estimate: ScaleEstimate,
     },
+    /// A younger coordinate frame was folded into an older one.
+    ///
+    /// Fires when place recognition proves the current frame overlaps a
+    /// previous epoch and the Sim(3) between them verified geometrically.
+    /// Poses emitted from now on carry the *older* epoch; content anchored
+    /// during the younger epoch can be re-anchored by applying the same
+    /// similarity, which is why the scale ratio is included.
+    EpochMerged {
+        /// When, in the unified timebase.
+        at: Timestamp,
+        /// The epoch that disappeared.
+        from_epoch: u32,
+        /// The epoch its poses now live in.
+        into_epoch: u32,
+        /// Scale ratio applied to the younger frame's translations.
+        scale: f64,
+    },
 }
 
 impl SlamEvent {
@@ -68,6 +85,7 @@ impl SlamEvent {
             SlamEvent::LoopClosure { .. } => "loop",
             SlamEvent::OriginReset { .. } => "origin-reset",
             SlamEvent::ScaleAcquired { .. } => "scale",
+            SlamEvent::EpochMerged { .. } => "epoch-merged",
         }
     }
 
@@ -117,6 +135,15 @@ impl SlamEvent {
                 } else {
                     "null".to_string()
                 }
+            ),
+            SlamEvent::EpochMerged {
+                at,
+                from_epoch,
+                into_epoch,
+                scale,
+            } => format!(
+                r#"{{"type":"epoch-merged","atTimestamp":{:.6},"fromEpoch":{from_epoch},"intoEpoch":{into_epoch},"scale":{scale:.9}}}"#,
+                at.millis()
             ),
         }
     }
