@@ -51,10 +51,19 @@ jobs:
       # Determinism is a spec requirement, not a nicety (spec.md §6). Running
       # the suite twice and diffing catches an unseeded RNG or a wall-clock read
       # that a single green run would hide.
+      #
+      # `^test ` also matches the per-binary summary lines, which carry a
+      # wall-clock duration ("finished in 175.92s") and so differ on every run.
+      # Dropping them is what makes this check about the tests rather than
+      # about the runner's mood.
       - name: determinism — the suite agrees with itself
         run: |
-          cargo test --workspace --all-features -- --test-threads=1 2>&1 | grep -E '^test ' | sort > /tmp/run1.txt
-          cargo test --workspace --all-features -- --test-threads=1 2>&1 | grep -E '^test ' | sort > /tmp/run2.txt
+          suite() {
+            cargo test --workspace --all-features -- --test-threads=1 2>&1 \
+              | grep -E '^test ' | grep -vE '^test result:' | sort
+          }
+          suite > /tmp/run1.txt
+          suite > /tmp/run2.txt
           diff /tmp/run1.txt /tmp/run2.txt
 
       # The rules spec.md §6 makes structural: no wall clock on the estimation
@@ -108,8 +117,18 @@ jobs:
   typescript:
     name: typescript
     runs-on: ubuntu-latest
+    # The demo dynamically imports `web-slam/pkg/wslam_wasm.js`, which is a
+    # build artifact (gitignored). The runtime fallback to the mock backend
+    # does not save the build: an unresolvable dynamic import is a hard error
+    # in Rollup, not a warning. Reuse the artifact the wasm job already
+    # uploaded rather than paying for a second wasm build here.
+    needs: wasm
     steps:
       - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: wasm-pkg
+          path: packages/web-slam/pkg
       # No `version:` here on purpose. package.json pins
       # `packageManager: pnpm@...`, and action-setup@v4 fails with
       # ERR_PNPM_BAD_PM_VERSION when both declare a version. One source of
