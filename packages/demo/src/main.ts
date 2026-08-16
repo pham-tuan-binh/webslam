@@ -272,6 +272,20 @@ async function main(): Promise<void> {
       fpsLabel.textContent = `${Math.round((frames * 1000) / (now - fpsWindowStart))} fps`;
       frames = 0;
       fpsWindowStart = now;
+
+      // Register the AR projection with the pipeline's focal estimate. L2
+      // refines it during the init pan, so re-read rather than set-and-forget.
+      // Without this the overlay renders through the scene's default FOV over
+      // a differently-wide camera feed — a misregistration that looks exactly
+      // like a tracking bug (see CameraSync.setIntrinsics). The viewport is
+      // the top half-screen pane the video cover-fits into.
+      const k = backend.intrinsicsEstimate();
+      if (k) {
+        sync.setIntrinsics(k.focalPx, k.width, k.height, {
+          width: innerWidth,
+          height: innerHeight / 2,
+        });
+      }
     }
   }
 }

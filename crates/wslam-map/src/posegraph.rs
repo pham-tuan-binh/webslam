@@ -1961,9 +1961,12 @@ mod tests {
         assert!(recovered < 1e-6, "recovered error {recovered}");
         // `cargo test` builds unoptimised and nalgebra pays dearly for that;
         // release is roughly 40x faster, so this is well under a second where
-        // it matters.
+        // it matters. The bound exists to catch an accidental O(n²) sparsity
+        // regression — a 10x blowup — not a percentage slowdown, so it carries
+        // slack for a loaded shared CI runner: the run typically takes ~2-4 s
+        // in debug, and 5.0 s was observed flaking at 5.17 s under CI load.
         assert!(
-            elapsed.as_secs_f64() < 5.0,
+            elapsed.as_secs_f64() < 20.0,
             "{n} nodes took {elapsed:?} for {} iterations",
             report.iterations
         );

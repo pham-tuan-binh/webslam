@@ -75,7 +75,13 @@ export interface Pose {
   position: Vec3;
   /** Camera orientation. Always meaningful — rotation is scale-invariant. */
   rotation: Quaternion;
-  /** 4x4 column-major, renderer-ready. Assign straight to `camera.matrix`. */
+  /**
+   * 4x4 column-major `T_world_camera`, in the tracker's computer-vision axes:
+   * x right, **y down, z forward**. A GL camera (three.js: y up, looking down
+   * −z) needs the basis flipped — right-multiply by `diag(1,−1,−1,1)` — which
+   * is exactly what `CameraSync` does. Assign it raw only to something that
+   * shares the CV convention.
+   */
   matrix: Float32Array;
   /** 6x6 covariance, `[translation, rotation]` block order, row-major. */
   covariance: Float64Array;

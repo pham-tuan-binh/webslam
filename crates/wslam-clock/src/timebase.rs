@@ -207,7 +207,12 @@ impl Default for FittedTimeBase {
 }
 
 impl TimeBase for FittedTimeBase {
-    fn map_camera(&mut self, media_time: f64, frame_index: u64) -> Timestamp {
+    // `_arrival_millis` is deliberately unused: L0 estimates the camera↔IMU
+    // offset from cross-correlation (the `offset` model) rather than from
+    // arrival stamps, whose event-loop jitter is the noise this layer exists
+    // to remove. The parameter exists for the passthrough base, which has no
+    // offset model and needs the arrival to share one origin across streams.
+    fn map_camera(&mut self, media_time: f64, _arrival_millis: f64, frame_index: u64) -> Timestamp {
         self.camera.push(frame_index, media_time);
         let origin = *self.camera_origin.get_or_insert(media_time);
         // Before the model converges the raw stamp is all there is. mediaTime
@@ -335,7 +340,8 @@ mod tests {
                 // mediaTime reads late by td_true for the same physical instant:
                 // "camera stamps lag IMU stamps".
                 let media = camera_epoch + t_c + td_true + CAMERA_30HZ.sample(&mut rng);
-                out.camera.push(tb.map_camera(media, n).seconds());
+                out.camera
+                    .push(tb.map_camera(media, media * 1e3, n).seconds());
                 out.camera_truth.push(t_c);
                 n += 1;
             }
@@ -562,16 +568,20 @@ mod tests {
             tb.map_motion(k, 1000.0 + k as f64 * (1000.0 / 60.0));
         }
         for n in 0..300u64 {
-            tb.map_camera(50.0 + n as f64 / 30.0, n);
+            tb.map_camera(50.0 + n as f64 / 30.0, (50.0 + n as f64 / 30.0) * 1e3, n);
         }
-        let camera_before = tb.map_camera(50.0 + 300.0 / 30.0, 300).seconds();
+        let camera_before = tb
+            .map_camera(50.0 + 300.0 / 30.0, (50.0 + 300.0 / 30.0) * 1e3, 300)
+            .seconds();
         let motion_before = tb
             .map_motion(600, 1000.0 + 600.0 * (1000.0 / 60.0))
             .seconds();
 
         tb.observe_offset(0.020, 1.0e-8);
         assert!(tb.camera_imu_offset() > 0.0);
-        let camera_after = tb.map_camera(50.0 + 301.0 / 30.0, 301).seconds();
+        let camera_after = tb
+            .map_camera(50.0 + 301.0 / 30.0, (50.0 + 301.0 / 30.0) * 1e3, 301)
+            .seconds();
         let motion_after = tb
             .map_motion(601, 1000.0 + 601.0 * (1000.0 / 60.0))
             .seconds();
@@ -616,7 +626,7 @@ mod tests {
             if i % 2 == 0 {
                 let n = i / 2;
                 let media = 7.0 + n as f64 / 30.0 + CAMERA_30HZ.sample(&mut rng);
-                let t = tb.map_camera(media, n);
+                let t = tb.map_camera(media, media * 1e3, n);
                 assert!(t >= last_c, "camera went backwards at frame {n}");
                 last_c = t;
             }
@@ -629,7 +639,7 @@ mod tests {
     #[test]
     fn first_sample_of_each_stream_is_the_origin() {
         let mut tb = FittedTimeBase::new(ClockConfig::default());
-        assert_eq!(tb.map_camera(12_345.678, 0), Timestamp::ZERO);
+        assert_eq!(tb.map_camera(12_345.678, 12_345_678.0, 0), Timestamp::ZERO);
         assert_eq!(tb.map_motion(0, 98_765.4), Timestamp::ZERO);
     }
 
@@ -638,8 +648,8 @@ mod tests {
         // Tier 3 is gated, but the timebase still has to return *something*
         // usable from frame zero, and the raw stamp is the best available.
         let mut tb = FittedTimeBase::new(ClockConfig::default());
-        tb.map_camera(100.0, 0);
-        let t = tb.map_camera(100.25, 1);
+        tb.map_camera(100.0, 100_000.0, 0);
+        let t = tb.map_camera(100.25, 100_250.0, 1);
         assert!((t.seconds() - 0.25).abs() < 1e-9);
         assert!(!tb.is_converged());
     }
@@ -667,7 +677,7 @@ mod tests {
             tb.map_motion(k, 1000.0 + k as f64 * (1000.0 / 60.0));
         }
         for n in 0..300u64 {
-            tb.map_camera(50.0 + n as f64 / 30.0, n);
+            tb.map_camera(50.0 + n as f64 / 30.0, (50.0 + n as f64 / 30.0) * 1e3, n);
         }
         assert!(tb.camera_cadence().is_converged());
         assert!(tb.motion_cadence().is_converged());
@@ -690,7 +700,7 @@ mod tests {
             tb.map_motion(k, 1000.0 + k as f64 * (1000.0 / 60.0));
         }
         for n in 0..300u64 {
-            tb.map_camera(50.0 + n as f64 / 30.0, n);
+            tb.map_camera(50.0 + n as f64 / 30.0, (50.0 + n as f64 / 30.0) * 1e3, n);
         }
         tb.observe_offset(0.021, 1.0e-9);
         assert!(tb.is_converged());
@@ -738,7 +748,7 @@ mod tests {
         assert_eq!(tb.camera_imu_offset(), 0.0);
         assert!(tb.offset_variance().is_infinite());
         assert!(!tb.is_converged());
-        assert_eq!(tb.map_camera(500.0, 0), Timestamp::ZERO);
+        assert_eq!(tb.map_camera(500.0, 500_000.0, 0), Timestamp::ZERO);
     }
 
     #[test]

@@ -65,6 +65,20 @@ export interface WebSlamAdvancedOptions extends WebSlamOptions {
   backend?: Backend;
 }
 
+/**
+ * `screen.orientation.angle`, with the legacy `window.orientation` fallback
+ * for older iOS. Both report degrees of counter-clockwise screen rotation
+ * from the natural orientation; absent both (a desktop, a test runner), 0 is
+ * the natural orientation and correct.
+ */
+function screenOrientationAngle(): number {
+  if (typeof screen !== 'undefined' && screen.orientation) {
+    return screen.orientation.angle;
+  }
+  const legacy = (globalThis as { orientation?: unknown }).orientation;
+  return typeof legacy === 'number' ? (legacy + 360) % 360 : 0;
+}
+
 /** Minimal typed event emitter. Kept private; no dependency worth its bytes. */
 class Emitter<T> {
   private handlers = new Set<(value: T) => void>();
@@ -202,7 +216,25 @@ export class WebSlam implements WebSlamApi {
       width: processing.width || settings.width || this.options.video.videoWidth || 1280,
       height: processing.height || settings.height || this.options.video.videoHeight || 720,
       motionAvailable,
+      // The camera↔IMU extrinsic depends on how the viewport is rotated
+      // relative to the device body (see BackendOptions). Captured once at
+      // start: a mid-session rotation also swaps the frame dimensions, so the
+      // honest response to one is a restart, not a silent re-derivation.
+      screenOrientationDeg: screenOrientationAngle(),
     });
+
+    if (typeof screen !== 'undefined' && screen.orientation) {
+      screen.orientation.addEventListener(
+        'change',
+        () => {
+          console.warn(
+            '[web-slam] screen orientation changed mid-session; the camera↔IMU ' +
+              'extrinsic and frame dimensions are now stale — restart the session',
+          );
+        },
+        { once: true },
+      );
+    }
 
     this.camera.start((frame) => this.onFrame(frame));
   }

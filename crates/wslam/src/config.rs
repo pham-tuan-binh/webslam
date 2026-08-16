@@ -248,6 +248,42 @@ impl SlamConfig {
     }
 }
 
+/// `R_body_camera` for a phone's **rear** camera in a browser.
+///
+/// The two frames this bridges:
+///
+/// - **Body**: what `DeviceMotion` reports in (W3C) — `x` right of the screen
+///   in the natural portrait orientation, `y` up the screen, `z` out of the
+///   screen toward the viewer. Fixed to the hardware; never rotates with the
+///   viewport.
+/// - **Camera**: the frame the tracker projects in — `x` image-right, `y`
+///   image-down, `z` along the optical axis into the scene. The browser
+///   delivers frames upright in the *current viewport*, so this frame moves
+///   when the viewport rotates.
+///
+/// `screen_angle_deg` is `screen.orientation.angle`: degrees the screen is
+/// rotated **counter-clockwise** from its natural orientation.
+///
+/// Derivation. Viewport-right in body coordinates is `(cos θ, −sin θ, 0)` —
+/// rotate the device CCW by θ and the viewer's "right" lands on the body axis
+/// that rotated *into* it. Image-down is minus viewport-up:
+/// `(−sin θ, −cos θ, 0)`. The rear optical axis points out the back:
+/// `(0, 0, −1)`. Those three columns are right-handed for every θ
+/// (`x̂ × ŷ = ẑ` identically), and factor as `Rz(−θ) · Rx(π)`. In portrait
+/// this is the familiar `diag(1, −1, −1)`.
+///
+/// Leaving `body_from_camera` at identity instead of this fed L2 rotations
+/// from the wrong frame on every phone — the same class of error that
+/// produced the −53.7% focal failure documented on
+/// [`SlamConfig::body_from_camera`], now from hardware rather than from a
+/// dataset extrinsic.
+#[must_use]
+pub fn browser_rear_camera_extrinsic(screen_angle_deg: Scalar) -> So3 {
+    let theta = screen_angle_deg.to_radians();
+    let flip = So3::exp(&wslam_core::Vec3::new(std::f64::consts::PI, 0.0, 0.0));
+    So3::exp(&wslam_core::Vec3::new(0.0, 0.0, -theta)).compose(&flip)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -302,5 +338,68 @@ mod tests {
         let k = SlamConfig::new(1280, 720).initial_intrinsics();
         let hfov = k.hfov_degrees();
         assert!((60.0..80.0).contains(&hfov), "hfov {hfov}");
+    }
+
+    fn assert_vec_close(got: wslam_core::Vec3, want: (f64, f64, f64)) {
+        let want = wslam_core::Vec3::new(want.0, want.1, want.2);
+        assert!((got - want).norm() < 1e-12, "got {got:?}, want {want:?}");
+    }
+
+    #[test]
+    fn portrait_rear_camera_is_a_half_turn_about_x() {
+        // Portrait: image-right is body-x, image-down is body−y (down the
+        // screen), and the optical axis points out the back of the device.
+        let r = browser_rear_camera_extrinsic(0.0);
+        assert_vec_close(
+            r.act(&wslam_core::Vec3::new(1.0, 0.0, 0.0)),
+            (1.0, 0.0, 0.0),
+        );
+        assert_vec_close(
+            r.act(&wslam_core::Vec3::new(0.0, 1.0, 0.0)),
+            (0.0, -1.0, 0.0),
+        );
+        assert_vec_close(
+            r.act(&wslam_core::Vec3::new(0.0, 0.0, 1.0)),
+            (0.0, 0.0, -1.0),
+        );
+    }
+
+    #[test]
+    fn landscape_rear_camera_swaps_the_image_axes_onto_the_body() {
+        // Device rotated 90° CCW (angle 90): the viewer's "right" is the edge
+        // that rotated into it — body −y. Image-down lands on body −x.
+        let r = browser_rear_camera_extrinsic(90.0);
+        assert_vec_close(
+            r.act(&wslam_core::Vec3::new(1.0, 0.0, 0.0)),
+            (0.0, -1.0, 0.0),
+        );
+        assert_vec_close(
+            r.act(&wslam_core::Vec3::new(0.0, 1.0, 0.0)),
+            (-1.0, 0.0, 0.0),
+        );
+        assert_vec_close(
+            r.act(&wslam_core::Vec3::new(0.0, 0.0, 1.0)),
+            (0.0, 0.0, -1.0),
+        );
+    }
+
+    #[test]
+    fn the_extrinsic_is_a_proper_rotation_at_every_angle() {
+        for deg in [0.0, 90.0, 180.0, 270.0, 37.5] {
+            let r = browser_rear_camera_extrinsic(deg);
+            let x = r.act(&wslam_core::Vec3::new(1.0, 0.0, 0.0));
+            let y = r.act(&wslam_core::Vec3::new(0.0, 1.0, 0.0));
+            let z = r.act(&wslam_core::Vec3::new(0.0, 0.0, 1.0));
+            // Orthonormal and right-handed: x̂ × ŷ = ẑ.
+            assert!((x.cross(&y) - z).norm() < 1e-12, "angle {deg}");
+            assert!((x.norm() - 1.0).abs() < 1e-12);
+        }
+    }
+
+    #[test]
+    fn a_full_turn_is_portrait_again() {
+        let a = browser_rear_camera_extrinsic(360.0);
+        let b = browser_rear_camera_extrinsic(0.0);
+        assert!(a.compose(&b.inverse()).angle() < 1e-9);
     }
 }

@@ -160,6 +160,7 @@ struct WireConfig {
     scale_size_meters: Option<f64>,
     scale_distance_meters: Option<f64>,
     motion_available: bool,
+    screen_orientation_deg: Option<f64>,
 }
 
 impl WireConfig {
@@ -181,6 +182,7 @@ impl WireConfig {
             scale_size_meters: field_f64(json, "sizeMeters"),
             scale_distance_meters: field_f64(json, "distanceMeters"),
             motion_available: field_bool(json, "motionAvailable").unwrap_or(false),
+            screen_orientation_deg: field_f64(json, "screenOrientationDeg"),
         }
     }
 }
@@ -257,6 +259,19 @@ impl WasmSlam {
         if !wire.motion_available && config.tier == SensorTier::VisionOrientation {
             config.tier = SensorTier::VisionOnly;
         }
+        // The camera↔IMU extrinsic for a phone. DeviceMotion reports in the
+        // device body frame; frames arrive upright in the viewport; the two
+        // differ by the screen-orientation angle plus the rear camera's
+        // half-turn mounting. The identity default is only right for a rig
+        // whose IMU and camera axes actually coincide — on a phone it hands
+        // L2 rotations from the wrong frame (see `browser_rear_camera_extrinsic`).
+        if let Some(deg) = wire.screen_orientation_deg {
+            config.body_from_camera = wslam::browser_rear_camera_extrinsic(deg);
+            log::info!(
+                "camera↔IMU extrinsic from screen orientation {deg}°, tier {}",
+                config.tier.number()
+            );
+        }
 
         let source = build_scale_source(&wire).map_err(|e| JsValue::from_str(&e))?;
         let inner = WebSlam::with_scale_source(config, source)
@@ -298,7 +313,7 @@ impl WasmSlam {
         &mut self,
         _index: f64,
         media_time: f64,
-        _arrival_ms: f64,
+        arrival_ms: f64,
         rgba: &[u8],
         width: u32,
         height: u32,
@@ -313,8 +328,11 @@ impl WasmSlam {
             );
             return;
         }
-        self.inner
-            .push_frame_raw(media_time, GrayImage::from_rgba(width, height, rgba));
+        self.inner.push_frame_raw(
+            media_time,
+            arrival_ms,
+            GrayImage::from_rgba(width, height, rgba),
+        );
     }
 
     /// Feed one motion event, in browser-native units (degrees per second).
@@ -648,7 +666,7 @@ mod tests {
 
     #[test]
     fn config_parsing_reads_the_shim_shape() {
-        let json = r#"{"scale":{"kind":"fiducial","config":{"family":"apriltag36h11","sizeMeters":0.1}},"tier":2,"map":true,"seed":1234,"focalPrior":null,"width":1280,"height":720,"motionAvailable":true,"mapBytesLength":0}"#;
+        let json = r#"{"scale":{"kind":"fiducial","config":{"family":"apriltag36h11","sizeMeters":0.1}},"tier":2,"map":true,"seed":1234,"focalPrior":null,"width":1280,"height":720,"motionAvailable":true,"screenOrientationDeg":90,"mapBytesLength":0}"#;
         let wire = WireConfig::parse(json);
         assert_eq!(wire.width, 1280);
         assert_eq!(wire.height, 720);
@@ -658,8 +676,17 @@ mod tests {
         assert!(wire.motion_available);
         assert_eq!(wire.scale_kind, "fiducial");
         assert_eq!(wire.scale_size_meters, Some(0.1));
+        assert_eq!(wire.screen_orientation_deg, Some(90.0));
         // `null` must not parse as a number.
         assert_eq!(wire.focal_prior, None);
+    }
+
+    #[test]
+    fn a_config_without_a_screen_orientation_keeps_the_identity_extrinsic() {
+        // Absent key — a native embedder or an old shim — must not invent a
+        // phone mounting. Identity stays, exactly as before the field existed.
+        let wire = WireConfig::parse(r#"{"width":640,"height":480}"#);
+        assert_eq!(wire.screen_orientation_deg, None);
     }
 
     #[test]

@@ -194,6 +194,11 @@ export class MockBackend implements Backend {
     return out;
   }
 
+  intrinsicsEstimate(): { focalPx: number; width: number; height: number } | null {
+    // The mock has no camera model; poses are synthesized, not projected.
+    return null;
+  }
+
   async saveMap(): Promise<Uint8Array> {
     // Header-shaped bytes so a caller who round-trips through
     // `ScaleSource.map()` gets something with the right smell, and so a demo

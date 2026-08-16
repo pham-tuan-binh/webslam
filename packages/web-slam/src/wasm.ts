@@ -106,6 +106,8 @@ export interface WasmSlamHandle {
   ): void;
   step_poses(): Float64Array;
   take_events(): string;
+  /** Current estimated focal length in pixels, refined by L2 during init. */
+  focal_px(): number;
   save_map(): Uint8Array;
   debug_landmarks(): Float32Array;
   debug_trajectory(): Float32Array;
@@ -182,6 +184,8 @@ export class WasmBackend implements Backend {
   private handle: WasmSlamHandle | null = null;
   private readonly module: WasmModule;
   private previousState: TrackingState = 'initializing';
+  /** The processing size handed to `configure`; intrinsics are in its pixels. */
+  private imageSize: { width: number; height: number } | null = null;
   /** Whether the WebGPU front-end is in use. False means the CPU reference. */
   gpuActive = false;
   private gyroScratch = new Float64Array(3);
@@ -222,9 +226,11 @@ export class WasmBackend implements Backend {
       width: options.width,
       height: options.height,
       motionAvailable: options.motionAvailable,
+      screenOrientationDeg: options.screenOrientationDeg,
       mapBytesLength: bytes?.byteLength ?? 0,
     };
     this.handle = new this.module.WasmSlam(JSON.stringify(config));
+    this.imageSize = { width: options.width, height: options.height };
     // Must happen before the first frame: the tracker builds its GPU pipeline
     // lazily from whatever context it holds when a frame first arrives.
     const acquire = (this.module as { acquire_gpu?: () => Promise<boolean> })
@@ -295,6 +301,13 @@ export class WasmBackend implements Backend {
   async saveMap(): Promise<Uint8Array> {
     if (!this.handle) throw new Error('web-slam: session not started');
     return this.handle.save_map();
+  }
+
+  intrinsicsEstimate(): { focalPx: number; width: number; height: number } | null {
+    if (!this.handle || !this.imageSize) return null;
+    const focalPx = this.handle.focal_px();
+    if (!(focalPx > 0)) return null;
+    return { focalPx, ...this.imageSize };
   }
 
   dispose(): void {

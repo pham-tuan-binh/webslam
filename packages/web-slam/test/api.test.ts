@@ -33,6 +33,7 @@ async function runFrames(backend: MockBackend, count: number, options = {}) {
     width: 1280,
     height: 720,
     motionAvailable: true,
+    screenOrientationDeg: 0,
     ...options,
   });
   const collected: Pose[] = [];
@@ -200,6 +201,7 @@ describe('pull and push are genuinely different paths', () => {
       width: 640,
       height: 480,
       motionAvailable: true,
+      screenOrientationDeg: 0,
     });
 
     // `start()` needs getUserMedia, which vitest has no business providing.
@@ -422,6 +424,22 @@ describe('the three.js helper', () => {
   it('tolerates a null pose', () => {
     const sync = new CameraSync(camera);
     expect(() => sync.update(null)).not.toThrow();
+  });
+
+  it('re-expresses the CV pose in GL axes: columns 1 and 2 negated', async () => {
+    // The tracker's camera frame is x right, y down, z forward; a three.js
+    // camera is y up looking down −z. The sync must right-multiply by
+    // diag(1,−1,−1,1) — without it the AR view is flipped 180° about x and
+    // vertical motion inverts on screen.
+    const sync = new CameraSync(camera);
+    const { collected } = await runFrames(new MockBackend(), 60);
+    const pose = collected.at(-1)!;
+    sync.update(pose);
+    const applied = camera.matrix.last!;
+    for (let i = 0; i < 16; i++) {
+      const flip = i >= 4 && i < 12 ? -1 : 1;
+      expect(applied[i]).toBeCloseTo(flip * pose.matrix[i], 6);
+    }
   });
 
   it('rejects an out-of-range smoothing factor', () => {

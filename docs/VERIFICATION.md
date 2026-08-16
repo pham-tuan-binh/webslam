@@ -603,3 +603,51 @@ accident.
 None of the GPU figures — 1.96 ms median, ATE 0.376 m — describe it. The CPU
 path measured ~50 ms per frame on a desktop at 1000 features, and the wasm
 build defaults to 250.
+
+
+## The browser path failed four ways the harness could not see, 2026-08-16
+
+"The demo tracks on EuRoC replay but is nonsense on a phone" turned out to be
+over-determined. The replay harness feeds `push_frame`/`push_imu` with the
+dataset's published intrinsics, extrinsic and unified timestamps — which
+bypasses every browser-only code path, so all four defects below were
+invisible to a green CI:
+
+1. **The AR camera was rendered in the wrong basis.** `pose.matrix` is
+   `T_world_camera` in the tracker's CV convention (x right, y down, z
+   forward — that is what `fx·x/z + cx` with `z > 0` in front means). It was
+   assigned raw to a three.js camera, which is y-up looking down −z. The
+   rendered view was flipped 180° about x: tilt the phone up, the overlay
+   tilts down. Even perfect tracking reads as broken through this.
+   `CameraSync` now right-multiplies by `diag(1,−1,−1,1)`.
+
+2. **Tier 2 poisoned its own intrinsics.** `body_from_camera` defaulted to
+   identity in the browser — the exact configuration documented on that field
+   as producing a −53.7% focal error on EuRoC. The L3 prior is protected by
+   the trust EWMA, but `update_intrinsics` feeds L2 the inter-frame rotation
+   ungated, so on any phone with motion granted L2 converged to a confident
+   wrong focal and `set_intrinsics` pushed it into the live tracker.
+   `browser_rear_camera_extrinsic` now derives `R_body_camera =
+   Rz(−θ)·Rx(π)` from `screen.orientation.angle`, wired shim → wire config.
+
+3. **The AR projection was never registered.** Nothing called
+   `CameraSync.setIntrinsics` — whose own doc comment calls skipping it "the
+   single most common integration mistake". The demo rendered a hardcoded 60°
+   vfov over whatever the camera actually was, plus an unaccounted
+   `object-fit: cover` crop. The demo now re-registers from
+   `backend.intrinsicsEstimate()` as L2 refines, crop included.
+
+4. **The two sensor streams lived on offset clocks.** `PassthroughTimeBase`
+   zeroed each stream at its own first sample, and the wasm boundary discarded
+   the frame's arrival stamp. The motion listener starts before the first
+   frame is delivered, so every `attitude_at(frame_time)` interpolated
+   attitude from a constant 100–300 ms in the past. Both streams now share
+   one arrival-anchored origin; camera timestamps still advance on the media
+   clock.
+
+**What is still unverified:** all of this is verified by unit tests of the
+conventions and by native builds — not by a phone session. The remaining
+browser-only risks are the CPU front-end's frame time on mobile hardware and
+the `DeviceMotion` sign conventions on iOS Safari, which no test here can
+reach. A phone run with the console open (`init_logging` reports the applied
+extrinsic and L2's focal) is the next verification step.

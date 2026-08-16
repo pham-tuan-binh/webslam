@@ -40,7 +40,9 @@ mod config;
 mod debug;
 mod events;
 
-pub use config::{IntrinsicsConfig, MapConfig, SensorTier, SlamConfig};
+pub use config::{
+    browser_rear_camera_extrinsic, IntrinsicsConfig, MapConfig, SensorTier, SlamConfig,
+};
 pub use debug::{DebugFeature, DebugKeyframe, DebugPoseGraphEdge, DebugSnapshot};
 pub use events::SlamEvent;
 
@@ -336,10 +338,18 @@ impl WebSlam {
     /// Feed one camera frame, exactly as the shim delivered it.
     ///
     /// `media_time` is `VideoFrameCallbackMetadata.mediaTime` in seconds.
-    pub fn push_frame_raw(&mut self, media_time: f64, image: wslam_core::GrayImage) {
+    /// `arrival_ms` is the shim's `performance.now()` stamp for the same frame
+    /// — the clock motion events are stamped in, which is what lets the
+    /// timebase put both streams on one origin (see [`PassthroughTimeBase`]).
+    pub fn push_frame_raw(
+        &mut self,
+        media_time: f64,
+        arrival_ms: f64,
+        image: wslam_core::GrayImage,
+    ) {
         let index = self.frame_counter;
         self.frame_counter += 1;
-        let timestamp = self.timebase.map_camera(media_time, index);
+        let timestamp = self.timebase.map_camera(media_time, arrival_ms, index);
         self.frames
             .push_back(Frame::new(wslam_core::FrameId(index), timestamp, image));
     }

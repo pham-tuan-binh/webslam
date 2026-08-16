@@ -40,6 +40,16 @@ export interface Backend {
   step(): StepResult;
   /** Serialise the map. */
   saveMap(): Promise<Uint8Array>;
+  /**
+   * The current focal-length estimate and the image size it is expressed in,
+   * or `null` when the backend has no camera model (the mock) or has not been
+   * configured yet.
+   *
+   * L2 refines this during the init pan, so consumers registering an AR
+   * projection should re-read it rather than caching the first value — see
+   * `CameraSync.setIntrinsics`.
+   */
+  intrinsicsEstimate(): { focalPx: number; width: number; height: number } | null;
   /** Release resources. */
   dispose(): void;
   /** The debug surface's data source. */
@@ -57,6 +67,18 @@ export interface BackendOptions {
   height: number;
   /** `false` when motion permission was denied — forces tier 1. */
   motionAvailable: boolean;
+  /**
+   * `screen.orientation.angle` at session start: degrees the screen is
+   * rotated counter-clockwise from its natural orientation.
+   *
+   * The pipeline derives the camera↔IMU extrinsic from it. `DeviceMotion`
+   * reports in the *device's* axes while the browser delivers camera frames
+   * upright in the *viewport's*; the two differ by this angle plus the rear
+   * camera's 180°-about-x mounting. Leaving the extrinsic at identity fed L2
+   * rotations from the wrong frame and corrupted the focal estimate — the
+   * −53.7% failure documented on `SlamConfig::body_from_camera`.
+   */
+  screenOrientationDeg: number;
 }
 
 /** What one `step()` produced. */

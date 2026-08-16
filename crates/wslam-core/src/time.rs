@@ -105,10 +105,14 @@ pub trait TimeBase: Send {
     ///
     /// `media_time` is `VideoFrameCallbackMetadata.mediaTime` in seconds — it
     /// rides the media clock, not the wall clock, which is exactly why the shim
-    /// forwards it raw (spec.md §4 L0). `frame_index` is the monotonically
-    /// increasing index of frames *delivered to us*, used to fit the cadence
-    /// model that per-event timestamps are too jittery to support.
-    fn map_camera(&mut self, media_time: f64, frame_index: u64) -> Timestamp;
+    /// forwards it raw (spec.md §4 L0). `arrival_millis` is the shim's raw
+    /// arrival stamp for the same frame, in the same clock the motion stream's
+    /// arrivals are stamped in — it is what lets an implementation put the two
+    /// streams on **one** origin instead of zeroing each independently.
+    /// `frame_index` is the monotonically increasing index of frames
+    /// *delivered to us*, used to fit the cadence model that per-event
+    /// timestamps are too jittery to support.
+    fn map_camera(&mut self, media_time: f64, arrival_millis: f64, frame_index: u64) -> Timestamp;
 
     /// Map a motion event.
     ///
@@ -140,10 +144,24 @@ pub trait TimeBase: Send {
 ///
 /// Correct for loose coupling, which needs ordering and approximate alignment
 /// but not sub-frame accuracy. Tier 3 swaps in `wslam_clock::FittedTimeBase`.
+///
+/// Both streams share **one** origin: the arrival stamp of whichever sample
+/// shows up first. An earlier version zeroed each stream at its own first
+/// sample, which silently baked the stream *start-order* into every
+/// cross-stream lookup — the motion listener starts before the camera
+/// delivers, so every `attitude_at(frame_time)` interpolated attitude from
+/// 100–300 ms in the past. Camera timestamps advance on the media clock
+/// (low jitter) but are anchored at the first frame's arrival; motion uses
+/// arrivals directly. The residual cross-stream error is the camera pipeline's
+/// capture-to-delivery latency on that first frame — bounded, and the thing
+/// L0 exists to remove at tier 3.
 #[derive(Debug, Clone, Default)]
 pub struct PassthroughTimeBase {
-    origin_media: Option<f64>,
-    origin_motion: Option<f64>,
+    /// Arrival stamp of the first sample seen on *either* stream, ms.
+    origin_arrival: Option<f64>,
+    /// First camera frame: `(media_time, anchor_seconds)` where the anchor is
+    /// that frame's arrival relative to `origin_arrival`.
+    camera_anchor: Option<(f64, f64)>,
 }
 
 impl PassthroughTimeBase {
@@ -155,13 +173,16 @@ impl PassthroughTimeBase {
 }
 
 impl TimeBase for PassthroughTimeBase {
-    fn map_camera(&mut self, media_time: f64, _frame_index: u64) -> Timestamp {
-        let origin = *self.origin_media.get_or_insert(media_time);
-        Timestamp::from_seconds(media_time - origin)
+    fn map_camera(&mut self, media_time: f64, arrival_millis: f64, _frame_index: u64) -> Timestamp {
+        let origin = *self.origin_arrival.get_or_insert(arrival_millis);
+        let (media_first, anchor_s) = *self
+            .camera_anchor
+            .get_or_insert((media_time, (arrival_millis - origin) / 1000.0));
+        Timestamp::from_seconds(anchor_s + (media_time - media_first))
     }
 
     fn map_motion(&mut self, _event_index: u64, arrival_millis: f64) -> Timestamp {
-        let origin = *self.origin_motion.get_or_insert(arrival_millis);
+        let origin = *self.origin_arrival.get_or_insert(arrival_millis);
         Timestamp::from_millis_f64(arrival_millis - origin)
     }
 
@@ -260,12 +281,44 @@ mod tests {
     }
 
     #[test]
-    fn passthrough_zeroes_at_first_sample() {
+    fn passthrough_zeroes_at_the_first_sample_of_either_stream() {
         let mut tb = PassthroughTimeBase::new();
-        assert_eq!(tb.map_camera(1000.5, 0), Timestamp::ZERO);
-        assert_eq!(tb.map_camera(1000.75, 1), Timestamp::from_seconds(0.25));
-        assert_eq!(tb.map_motion(0, 5_000.0), Timestamp::ZERO);
-        assert_eq!(tb.map_motion(1, 5_010.0), Timestamp::from_millis_f64(10.0));
+        assert_eq!(tb.map_camera(1000.5, 7_000.0, 0), Timestamp::ZERO);
+        assert_eq!(
+            tb.map_camera(1000.75, 7_020.0, 1),
+            Timestamp::from_seconds(0.25)
+        );
+        // Motion arriving later lands *later* on the shared clock — not at a
+        // fresh zero of its own.
+        assert_eq!(tb.map_motion(0, 7_005.0), Timestamp::from_millis_f64(5.0));
+        assert_eq!(tb.map_motion(1, 7_015.0), Timestamp::from_millis_f64(15.0));
+    }
+
+    #[test]
+    fn passthrough_keeps_the_streams_on_one_origin_regardless_of_start_order() {
+        // The browser's actual order: motion permission resolves and samples
+        // flow ~200 ms before the first frame is delivered. The frame must
+        // land at ~200 ms on the shared clock — the old per-stream zeroing put
+        // it at 0, so every attitude lookup was 200 ms stale.
+        let mut tb = PassthroughTimeBase::new();
+        assert_eq!(tb.map_motion(0, 3_000.0), Timestamp::ZERO);
+        assert_eq!(tb.map_motion(1, 3_100.0), Timestamp::from_millis_f64(100.0));
+        let first = tb.map_camera(42.0, 3_200.0, 0);
+        assert!((first.seconds() - 0.2).abs() < 1e-9, "{first}");
+        // Subsequent frames advance on the media clock from that anchor.
+        let second = tb.map_camera(42.0333, 3_233.0, 1);
+        assert!((second.seconds() - 0.2333).abs() < 1e-9, "{second}");
+    }
+
+    #[test]
+    fn passthrough_camera_spacing_rides_the_media_clock_not_arrivals() {
+        // Delivery jitter on later frames must not reach the timestamps; only
+        // the first frame anchors, everything after advances by mediaTime.
+        let mut tb = PassthroughTimeBase::new();
+        tb.map_camera(10.0, 1_000.0, 0);
+        // 33.3 ms of media time, but the callback fired 80 ms late.
+        let t = tb.map_camera(10.0333, 1_113.0, 1);
+        assert!((t.seconds() - 0.0333).abs() < 1e-9, "{t}");
     }
 
     #[test]

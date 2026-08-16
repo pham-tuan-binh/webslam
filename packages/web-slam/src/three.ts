@@ -61,6 +61,7 @@ export class CameraSync {
   private readonly holdOnLoss: boolean;
   private readonly smoothing: number;
   private smoothed: Float32Array | null = null;
+  private readonly gl = new Float32Array(16);
   private lastState: TrackingState = 'initializing';
 
   constructor(camera: CameraLike, options: CameraSyncOptions = {}) {
@@ -83,7 +84,22 @@ export class CameraSync {
     this.lastState = pose.state;
     if (!hasPose(pose.state) && this.holdOnLoss) return;
 
-    let m = pose.matrix;
+    // `pose.matrix` is `T_world_camera` in the tracker's computer-vision
+    // convention: x right, **y down, z forward** — that is what `fx·x/z + cx`
+    // projecting with z > 0 in front means. A three.js camera is the opposite
+    // handed basis: y up, looking down −z. Applying the CV matrix raw renders
+    // a view flipped 180° about x — tilt the phone up and the scene tilts
+    // down, which reads as broken tracking rather than as the axis bug it is.
+    //
+    // Right-multiplying by diag(1,−1,−1,1) re-expresses the same physical
+    // camera in GL axes: column-major, that is negating columns 1 and 2. The
+    // world stays in CV coordinates, so world-space content (landmarks, the
+    // trail) projects through this camera exactly as the tracker saw it.
+    const cv = pose.matrix;
+    const m = this.gl;
+    m.set(cv);
+    for (let i = 4; i < 12; i++) m[i] = -cv[i];
+
     if (this.smoothing < 1) {
       if (!this.smoothed) {
         this.smoothed = new Float32Array(m);
@@ -95,7 +111,8 @@ export class CameraSync {
         }
         this.smoothed.set(m.subarray(0, 12), 0);
       }
-      m = this.smoothed;
+      this.camera.matrix.fromArray(this.smoothed);
+      return;
     }
     this.camera.matrix.fromArray(m);
   }
@@ -108,16 +125,37 @@ export class CameraSync {
   /**
    * Set the camera's vertical FOV from web-slam's estimated intrinsics.
    *
-   * Call once after L2 converges. Rendering with the default 50-degree three.js
-   * FOV over a 66-degree camera feed produces a registration error that looks
-   * exactly like a tracking bug, and is the single most common integration
-   * mistake.
+   * Call after L2 converges — and again when it refines; it is idempotent.
+   * Rendering with the default 50-degree three.js FOV over a 66-degree camera
+   * feed produces a registration error that looks exactly like a tracking
+   * bug, and is the single most common integration mistake.
+   *
+   * When the video is displayed with `object-fit: cover` (every full-bleed AR
+   * layout), the pane shows only a centred crop of the image, so the pane's
+   * FOV is narrower than the camera's. Pass the pane size as `viewport` and
+   * the crop is accounted for; omit it for a renderer that shows the full
+   * frame.
    */
-  setIntrinsics(focalPx: number, imageWidth: number, imageHeight: number): void {
-    if (!(focalPx > 0 && imageHeight > 0)) return;
-    const vfov = 2 * Math.atan(imageHeight / 2 / focalPx) * (180 / Math.PI);
+  setIntrinsics(
+    focalPx: number,
+    imageWidth: number,
+    imageHeight: number,
+    viewport?: { width: number; height: number },
+  ): void {
+    if (!(focalPx > 0 && imageHeight > 0 && imageWidth > 0)) return;
+    let visibleRows = imageHeight;
+    let aspect = imageWidth / imageHeight;
+    if (viewport && viewport.width > 0 && viewport.height > 0) {
+      // Cover-fit: the image is scaled by max(paneW/W, paneH/H) and the
+      // overflow is cropped equally on both sides. The rows that survive are
+      // what the pane's vertical FOV subtends.
+      const s = Math.max(viewport.width / imageWidth, viewport.height / imageHeight);
+      visibleRows = viewport.height / s;
+      aspect = viewport.width / viewport.height;
+    }
+    const vfov = 2 * Math.atan(visibleRows / 2 / focalPx) * (180 / Math.PI);
     this.camera.fov = vfov;
-    this.camera.aspect = imageWidth / imageHeight;
+    this.camera.aspect = aspect;
     this.camera.updateProjectionMatrix?.();
   }
 }
