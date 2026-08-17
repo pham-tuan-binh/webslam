@@ -319,9 +319,25 @@ pub struct TrackConfig {
     /// Fewest features the tracker considers a workable frame. A frame that
     /// still holds fewer than this *after* the refill is reported as
     /// `insufficient-features`, and a landmark count below it forces a
-    /// keyframe. The refill itself is unconditional — it runs whenever the set
-    /// is short of [`TrackConfig::max_features`].
+    /// keyframe.
     pub min_features: usize,
+    /// Fraction of [`TrackConfig::max_features`] below which the per-frame
+    /// corner refill actually runs.
+    ///
+    /// The refill's cost is not the corners it returns — it is the full-image
+    /// response map it computes to find them, ~7 ms of a 17 ms wasm frame at
+    /// 640x360. With refill-on-any-deficit the feature count hovers one short
+    /// of the budget and the map is computed every frame to add one corner.
+    /// With hysteresis the count sawtooths between `refill_below_fraction *
+    /// max_features` and the budget, and most frames skip detection entirely.
+    /// The trough (200 at the defaults) stays far above `min_features` (60),
+    /// which is what distinguishes this from the keyframe-only refill the
+    /// history warns about — that one let the set sag *through* the floor.
+    ///
+    /// Keyframes and an empty map still refill unconditionally: keyframes
+    /// register the full set as observations, and the bootstrap wants all the
+    /// supply it can get. `1.0` restores refill-on-any-deficit, for ablation.
+    pub refill_below_fraction: Scalar,
     /// Pyramid levels including level 0.
     pub pyramid_levels: u32,
     /// KLT patch **half**-width; the patch is `(2w+1) x (2w+1)`.
@@ -414,6 +430,7 @@ impl Default for TrackConfig {
         TrackConfig {
             max_features: 250,
             min_features: 60,
+            refill_below_fraction: 0.8,
             pyramid_levels: 4,
             klt_window: 5,
             klt_iterations: 24,
@@ -930,11 +947,22 @@ impl Tracker {
         // old condition also fired the refill *and* the complaint on the same
         // frame, which is a report of a problem the tracker had just fixed.
         //
-        // Detecting corners every frame is what a KLT front-end does (and what
-        // spec.md §4 L3 budgets the GPU for); the detector is masked by the
-        // surviving features, so a frame that has lost nothing costs one
-        // response map and returns nothing.
-        if self.features.len() < self.config.max_features {
+        // "The detector is masked by the surviving features, so a frame that
+        // has lost nothing costs one response map and returns nothing" — and
+        // that response map is precisely the cost: ~7 ms of a 17 ms wasm
+        // frame, paid every frame to top up a set that is one corner short.
+        // Hysteresis instead: let the set drain to `refill_below_fraction`
+        // of the budget, then fill back to the brim. See the config field
+        // for why this is not the keyframe-only sawtooth the paragraph above
+        // this one warns about. Keyframes still refill unconditionally so
+        // they register a full observation set, and so does an empty map,
+        // because the bootstrap is supply-hungry.
+        let refill_floor =
+            (self.config.max_features as Scalar * self.config.refill_below_fraction) as usize;
+        let wants_refill = self.features.len() < refill_floor
+            || ((is_keyframe || self.map.is_empty())
+                && self.features.len() < self.config.max_features);
+        if wants_refill {
             self.refill(&frame.image);
         }
         if is_keyframe {

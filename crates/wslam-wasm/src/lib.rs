@@ -564,8 +564,7 @@ struct PerformanceHostClock;
 #[cfg(target_arch = "wasm32")]
 fn performance_now_ms() -> Option<f64> {
     use wasm_bindgen::JsCast;
-    let value =
-        js_sys::Reflect::get(&js_sys::global(), &JsValue::from_str("performance")).ok()?;
+    let value = js_sys::Reflect::get(&js_sys::global(), &JsValue::from_str("performance")).ok()?;
     Some(value.dyn_into::<web_sys::Performance>().ok()?.now())
 }
 
