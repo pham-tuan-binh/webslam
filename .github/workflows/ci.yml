@@ -239,3 +239,8 @@ jobs:
           name: nightly-rerun-session
           path: /tmp/nightly.rrd
           if-no-files-found: ignore
+          # A session is ~0.5 GB per sequence (968 MB measured for a 2-sequence
+          # subset). Its purpose is scrubbing the most recent regression, not
+          # archival — at the default 90-day retention the nightlies would eat
+          # a personal account's entire Actions storage quota within days.
+          retention-days: 3
