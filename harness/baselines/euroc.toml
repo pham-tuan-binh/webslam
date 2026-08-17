@@ -1,6 +1,41 @@
-# Tier-2 regression baselines for EuRoC.
+# Tier-2 regression baselines. spec.md §6: "CI fails on regression
+# beyond tolerance."
 #
-# Empty until recorded. An unbaselined sequence FAILS the regression run
-# rather than passing quietly — see README.md.
-#
-# Record with: cargo xtask regen-baselines --confirm
+# Regenerate with: cargo xtask regen-baselines --confirm
+# A change here must be explained in the commit message.
+
+[[sequence]]
+name = "MH_01_easy"
+ate_rmse = 0.384565
+lost_fraction = 0.008963
+frame_ms_p99 = 73.0117
+map_mb_per_min = 2.4070
+
+[[sequence]]
+name = "MH_03_medium"
+ate_rmse = 3.035084
+lost_fraction = 0.067407
+frame_ms_p99 = 74.3545
+map_mb_per_min = 2.8327
+
+[[sequence]]
+name = "V1_01_easy"
+ate_rmse = 1.631020
+lost_fraction = 0.100618
+frame_ms_p99 = 73.5631
+map_mb_per_min = 2.7643
+
+[[sequence]]
+name = "V1_03_difficult"
+ate_rmse = 1.634452
+lost_fraction = 0.648208
+frame_ms_p99 = 72.2099
+map_mb_per_min = 1.1700
+
+[[sequence]]
+name = "V2_03_difficult"
+ate_rmse = 1.773613
+lost_fraction = 0.638918
+frame_ms_p99 = 75.6333
+map_mb_per_min = 1.0741
+
