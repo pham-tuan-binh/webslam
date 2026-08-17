@@ -33,8 +33,16 @@ as unmatched. `fetch.sh` pulls room sequences for that reason.
 ## The EuRoC host is unreliable
 
 `robotics.ethz.ch` was unreachable while this was written — DNS resolves, port 80
-times out. `fetch.sh` detects that and prints manual instructions instead of
-hanging or dying: download the "ASL Dataset Format" zips from
+times out — and has stayed that way; ETH moved the files into their Research
+Collection (DOI 10.3929/ethz-b-000690084), which refuses non-interactive
+clients. `fetch.sh` therefore tries a **private** per-sequence copy on Hugging
+Face first, which needs `HF_TOKEN` in the environment (a read-scoped token; CI
+gets it from the repository secret of the same name). Private rather than a
+public mirror because the dataset's rights statement (below) permits
+non-commercial *use*, not redistribution.
+
+Without a token the script falls back to the canonical host and, failing that,
+prints manual instructions: download the "ASL Dataset Format" zips from
 
   https://projects.asl.ethz.ch/datasets/doku.php?id=kmavvisualinertialdatasets
 
@@ -61,8 +69,10 @@ throttling.
 
 None of this is redistributed here. Each dataset carries its own terms:
 
-- **EuRoC MAV** — CC BY 3.0. Burri et al., *The EuRoC micro aerial vehicle
-  datasets*, IJRR 2016.
+- **EuRoC MAV** — *In Copyright, Non-Commercial Use Permitted*
+  (rightsstatements.org/page/InC-NC/1.0/, per the ETH Research Collection
+  entry — widely mis-cited as CC, including by an earlier version of this
+  file). Burri et al., *The EuRoC micro aerial vehicle datasets*, IJRR 2016.
 - **TUM VI** — CC BY 4.0 (data), BSD-2-Clause (code). Schubert et al., *The TUM VI
   Benchmark for Evaluating Visual-Inertial Odometry*, IROS 2018.
 - **7-Scenes** — Microsoft research-use terms. Shotton et al., CVPR 2013.

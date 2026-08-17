@@ -15,6 +15,15 @@ on:
     # 04:00 UTC nightly, for the full replay sweep.
     - cron: "0 4 * * *"
   workflow_dispatch:
+    inputs:
+      record-baselines:
+        description: >-
+          Re-record the tier-2 baselines from this run and upload
+          harness/baselines/euroc.toml as an artifact to commit. Baselines
+          must come from the environment that enforces them — the p99 frame
+          time wall in particular is meaningless recorded on a fast dev box.
+        type: boolean
+        default: false
 
 env:
   CARGO_TERM_COLOR: always
@@ -191,10 +200,31 @@ jobs:
 
       - name: fetch datasets
         if: steps.datasets.outputs.cache-hit != 'true'
+        # HF_TOKEN reads the private per-sequence copies (see datasets/fetch.sh
+        # for why they are private and why the canonical host cannot serve CI).
+        # Fork PRs do not receive secrets; they ride the dataset cache seeded
+        # by pushes to main instead.
+        env:
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
         run: sh datasets/fetch.sh euroc
 
       - name: replay regression
+        if: ${{ !(github.event_name == 'workflow_dispatch' && inputs.record-baselines) }}
         run: cargo run -p wslam-replay --release -- regress ${{ github.event_name == 'schedule' && '--full' || '--subset' }}
+
+      # The baseline-recording path. Dispatch with record-baselines, download
+      # the artifact, review the numbers, commit the toml. Recording runs the
+      # full sweep so every sequence the nightly checks has a baseline —
+      # a partial recording would turn the wall off for the missing ones.
+      - name: record baselines
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.record-baselines }}
+        run: cargo run -p wslam-replay --release -- regress --full --write
+
+      - uses: actions/upload-artifact@v4
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.record-baselines }}
+        with:
+          name: recorded-baselines
+          path: harness/baselines/euroc.toml
 
       # spec.md §6: "Nightly runs record a rerun session as a build artifact.
       # When a regression fires, scrub the failing run visually instead of

@@ -16,6 +16,16 @@ WHICH="${1:-all}"
 DIR="$(cd "$(dirname "$0")" && pwd)"
 
 EUROC_BASE="http://robotics.ethz.ch/~asl-datasets/ijrr_euroc_mav_dataset"
+# Per-sequence copies on Hugging Face, tried first. The ETH host has been
+# unreachable for months (connect timeout; ETH moved the files into their
+# Research Collection, which 403s non-browser clients), so CI needs a host
+# that answers. The repository is **private** — EuRoC's rights statement is
+# "In Copyright – Non-Commercial Use Permitted", which does not grant
+# redistribution, so the copies are not published. Reading it needs
+# HF_TOKEN in the environment (a read-scoped token; in CI it comes from the
+# repository secret of the same name). Without a token this host is skipped
+# and the canonical one is tried, followed by the manual instructions.
+EUROC_MIRROR="https://huggingface.co/datasets/binhpham/euroc-mav-sequences/resolve/main"
 # The core five. MH_01/MH_03 are easy, V1_03/V2_03 are the hard ones where a
 # tracker either survives or does not — regressions show up there first.
 EUROC_SEQUENCES="machine_hall/MH_01_easy/MH_01_easy
@@ -59,11 +69,27 @@ download() {
     echo "  have $(basename "$out")"
     return 0
   fi
+  # The Hugging Face host holds private copies and needs a bearer token.
+  # The token is sent to huggingface.co and NOWHERE else — appending it
+  # unconditionally would hand a credential to every dataset host in this
+  # file. (The CDN redirect HF answers with carries its own signed URL, so
+  # dropping the header across the redirect — curl's default — is correct.)
+  set -- # reuse $@ for the auth argument, empty by default
+  case "$url" in
+    https://huggingface.co/*)
+      if [ -z "${HF_TOKEN:-}" ]; then
+        printf "  \033[33mskipping %s: HF_TOKEN is not set (private host)\033[0m\n" \
+          "$(basename "$out")" >&2
+        return 1
+      fi
+      set -- --header "Authorization: Bearer $HF_TOKEN"
+      ;;
+  esac
   echo "  fetching $(basename "$out")"
   # --continue-at resumes an interrupted multi-gigabyte fetch instead of starting
   # over. --connect-timeout fails fast on a dead host rather than hanging.
   if curl --fail --location --continue-at - --connect-timeout 20 --progress-bar \
-          --output "$out.part" "$url"; then
+          "$@" --output "$out.part" "$url"; then
     mv "$out.part" "$out"
     return 0
   fi
@@ -94,7 +120,7 @@ adopt_manual() {
 }
 
 fetch_euroc() {
-  echo "EuRoC MAV (ETH Zurich, CC BY 3.0)"
+  echo "EuRoC MAV (ETH Zurich, In Copyright / Non-Commercial Use Permitted)"
   echo "  Burri et al., IJRR 2016. Cite it if you publish numbers from it."
   target="$DIR/euroc"
   mkdir -p "$target"
@@ -105,7 +131,10 @@ fetch_euroc() {
   for seq in $EUROC_SEQUENCES; do
     name="$(basename "$seq")"
     [ -d "$target/$name" ] && { echo "  have $name"; continue; }
-    if download "$EUROC_BASE/$seq.zip" "$target/$name.zip"; then
+    # Mirror first: it answers. The canonical host second, so the day ETH
+    # resurrects it the script keeps working even if the mirror goes away.
+    if download "$EUROC_MIRROR/$name.zip" "$target/$name.zip" ||
+      download "$EUROC_BASE/$seq.zip" "$target/$name.zip"; then
       echo "  unpacking $name"
       unzip -q "$target/$name.zip" -d "$target/$name"
       rm "$target/$name.zip"
