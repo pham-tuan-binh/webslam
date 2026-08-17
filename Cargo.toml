@@ -103,3 +103,13 @@ lto = "fat"
 [profile.bench]
 inherits = "release"
 debug = true
+
+# The tracker's kernels (KLT flow + FAST corners) are ~90% of the wasm frame
+# budget, and `opt-level = "s"` was costing them 40%: measured 24.4 -> 17.8 ms
+# median at 640x360 (packages/web-slam/bench) from these two overrides alone.
+# Only the hot crates pay the size cost — the artifact grew 572 -> 641 KiB
+# against the 3 MiB budget. The rest of the wasm build stays size-optimised.
+[profile.wasm-release.package.wslam-track]
+opt-level = 3
+[profile.wasm-release.package.wslam-core]
+opt-level = 3

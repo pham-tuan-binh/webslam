@@ -361,6 +361,9 @@ fn replay(
     }
 
     let mut slam = wslam::WebSlam::new(config)?;
+    // The stage panel in the report was all zeros until this line existed:
+    // the tracker only times its stages when given a clock.
+    slam.set_host_clock(Some(Box::new(wslam_core::time::StdHostClock::new())));
     if let Some(path) = vocab {
         let bytes = std::fs::read(path).with_context(|| format!("reading {}", path.display()))?;
         let v = wslam_map::Vocabulary::deserialize(&bytes)?;

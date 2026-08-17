@@ -617,6 +617,18 @@ impl WebSlam {
         *self.tracker.timings()
     }
 
+    /// Install the profiling clock that fills [`WebSlam::stage_timings`].
+    ///
+    /// Without one every stage reads 0.0 — which is how both the demo's HUD
+    /// and the replay report shipped with dead timing panels: the tracker has
+    /// had the stopwatch since day one and nothing production ever handed it
+    /// a clock. `HostClock` is the sanctioned profiling seam (spec.md §6 bans
+    /// wall clocks on the estimation path; this one is write-only into the
+    /// debug surface).
+    pub fn set_host_clock(&mut self, clock: Option<Box<dyn wslam_core::HostClock>>) {
+        self.tracker.set_host_clock(clock);
+    }
+
     /// The trajectory rebuilt from the *current* keyframe poses.
     ///
     /// **Known defective — do not use for evaluation yet.** With loop closure

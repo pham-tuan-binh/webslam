@@ -1,2 +1,10 @@
 [alias]
 xtask = "run --package xtask --"
+
+# SIMD for every wasm build. Universally supported (Chrome 91+, Firefox 89+,
+# Safari 16.4+), worth ~2% today because the kernels are scalar-shaped, and a
+# precondition for hand-vectorising them, which is where the next real win is.
+# Scalar Rust float semantics are unchanged (no fast-math), so determinism
+# claims are unaffected.
+[target.wasm32-unknown-unknown]
+rustflags = ["-C", "target-feature=+simd128"]

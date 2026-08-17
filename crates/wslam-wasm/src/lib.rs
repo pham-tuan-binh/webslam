@@ -274,8 +274,14 @@ impl WasmSlam {
         }
 
         let source = build_scale_source(&wire).map_err(|e| JsValue::from_str(&e))?;
-        let inner = WebSlam::with_scale_source(config, source)
+        #[cfg_attr(not(target_arch = "wasm32"), allow(unused_mut))]
+        let mut inner = WebSlam::with_scale_source(config, source)
             .map_err(|e| JsValue::from_str(&e.to_string()))?;
+        // The profiling clock behind `debug_timings` / the demo's stage HUD.
+        // Installed here, not in the pipeline: HostClock is the one sanctioned
+        // wall-clock seam and it is write-only into the debug surface.
+        #[cfg(target_arch = "wasm32")]
+        inner.set_host_clock(PerformanceHostClock::new().map(|c| Box::new(c) as _));
 
         Ok(WasmSlam {
             inner,
@@ -538,6 +544,44 @@ fn build_scale_source(wire: &WireConfig) -> Result<Box<dyn wslam::scale::ScaleSo
             "ScaleSource.learned() requires a build with the `learned-scale` feature.".to_string(),
         ),
         other => Err(format!("unknown ScaleSource kind {other:?}")),
+    }
+}
+
+/// `performance.now()`-backed [`wslam_core::HostClock`], for the stage HUD.
+///
+/// Resolved through the global object rather than `web_sys::window()` so it
+/// works identically on the main thread and in a worker — a worker has
+/// `performance` but no `window`. Returns `None` when the platform has
+/// neither, in which case the stage timings stay zero, exactly as documented
+/// on `StageTimings`.
+// Stateless on purpose: `HostClock: Send`, and a stored `Performance` is a
+// `JsValue`, which is not. Re-resolving through the global per call keeps the
+// struct trivially `Send` without `unsafe` (forbidden crate-wide), and costs
+// nanoseconds against the millisecond stages it measures.
+#[cfg(target_arch = "wasm32")]
+struct PerformanceHostClock;
+
+#[cfg(target_arch = "wasm32")]
+fn performance_now_ms() -> Option<f64> {
+    use wasm_bindgen::JsCast;
+    let value =
+        js_sys::Reflect::get(&js_sys::global(), &JsValue::from_str("performance")).ok()?;
+    Some(value.dyn_into::<web_sys::Performance>().ok()?.now())
+}
+
+#[cfg(target_arch = "wasm32")]
+impl PerformanceHostClock {
+    /// `None` when the platform has no `performance` object, in which case
+    /// the stage timings stay zero, exactly as documented on `StageTimings`.
+    fn new() -> Option<Self> {
+        performance_now_ms().map(|_| PerformanceHostClock)
+    }
+}
+
+#[cfg(target_arch = "wasm32")]
+impl wslam_core::HostClock for PerformanceHostClock {
+    fn elapsed_seconds(&self) -> f64 {
+        performance_now_ms().unwrap_or(0.0) * 1.0e-3
     }
 }
 
