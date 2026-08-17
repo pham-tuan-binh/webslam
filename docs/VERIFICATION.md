@@ -651,3 +651,55 @@ browser-only risks are the CPU front-end's frame time on mobile hardware and
 the `DeviceMotion` sign conventions on iOS Safari, which no test here can
 reach. A phone run with the console open (`init_logging` reports the applied
 extrinsic and L2's focal) is the next verification step.
+
+
+## The wasm frame budget, measured — and the path to the GPU, 2026-08-17
+
+With the stage stopwatch finally wired (the tracker had per-stage timing from
+day one; nothing production ever installed a `HostClock`), the budget at
+640×360 on the Node bench (`packages/web-slam/bench/wasm-bench.mjs`):
+
+| change | median | corners | flow |
+|---|---|---|---|
+| shipped (opt-level "s" everywhere) | 24.4 ms | 10.3 | 10.9 |
+| + opt-level 3 on wslam-track/core, +simd128 | 17.5 ms | 7.1 | 9.5 |
+| + corner-refill hysteresis (0.8) | **10.9 ms** | 0.8 | 10.0 |
+
+Native MH_01 went 21.2 → 13.0 ms median over the same changes, with ATE
+*improving* (0.3846 → 0.3499 m; MH_02 0.6442 → 0.5235 m) — less feature churn
+makes longer, stabler tracks. simd128 itself was worth ~2%: the kernels are
+scalar-shaped, so the flag is a precondition, not a win.
+
+**Flow is now 92% of the frame.** The remaining levers, in order of return:
+
+1. **Async GPU readback** — the documented 25× (1.92 ms GPU vs the CPU
+   reference). WebGPU has *no* synchronous readback, so "lift the
+   compile_error" decomposes as:
+   - `read_back` grows an async twin (`map_async` + await, no `device.poll`
+     wait on wasm — the browser drives completion).
+   - `Tracker::process` cannot stay synchronous and consume same-frame GPU
+     results. Either it becomes `async` (infects `WebSlam::step` and the wasm
+     boundary; wasm-bindgen handles async methods, native harness uses
+     pollster — mechanical but wide), or the tracker pipelines: submit flow
+     for pair (N−1, N) at frame N, harvest at N+1, accept one frame of pose
+     latency. The corner path needs no such choice — detected corners are
+     already consumed with a frame of latency by construction, so **GPU
+     corners alone** (submit at N, harvest at N+1) fits the existing sync
+     dataflow. With hysteresis, though, corners are down to 0.8 ms — that
+     prize has already been claimed on the CPU. The async work is now
+     justified by flow alone.
+   - Validation needs a WebGPU runtime: Node lacks one; use Deno or headless
+     Chrome against the bench scene, plus the EuRoC wall for accuracy parity
+     (the GPU flow kernel already passes the native suite).
+
+2. **Hand-SIMD the KLT patch loop** (simd128 is already on) — the 7×7 patch
+   correlation is the inner loop of the remaining 10 ms; 2–3× is typical for
+   hand-vectorised KLT. No architectural risk, browser-testable with the
+   existing bench.
+
+3. **Worker offload** — moves the ~11 ms off the UI thread (jank, not
+   throughput). The shim already stamps arrivals; frames would cross as
+   transferables. Pairs well with either of the above.
+
+Not pursued: wasm threads (needs COOP/COEP, which GitHub Pages cannot serve),
+and wasm-opt -O3 (measured as noise against -Os).
